@@ -123,6 +123,8 @@ public:
   explicit EcMaster(const unsigned int master = 0);
   virtual ~EcMaster();
 
+  inline bool isValid() const {return master_ != nullptr;}
+
   /** \brief add a slave device to the master
     * alias and position can be found by running the following command
     * /opt/etherlab/bin$ sudo ./ethercat slaves

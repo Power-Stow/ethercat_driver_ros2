@@ -85,6 +85,11 @@ void EcMaster::addSlave(uint16_t alias, uint16_t position, EcSlave * slave)
 
 void EcMaster::addSlave(EcSlave * slave)
 {
+  if (master_ == nullptr) {
+    printWarning("Add slave. Master is not available.");
+    return;
+  }
+
   if (false == slave->isAliasAndPositionSet()) {
     std::string error_message = "Alias and position not set for slave (vendor id=" + std::to_string(
       slave->vendor_id_) + ",product_code=" + std::to_string(slave->product_id_) + ").";
@@ -164,6 +169,11 @@ int EcMaster::configSlaveSdo(
   uint16_t slave_position, SdoConfigEntry sdo_config,
   uint32_t * abort_code)
 {
+  if (master_ == nullptr) {
+    printWarning("Config SDO. Master is not available.");
+    return -1;
+  }
+
   uint8_t buffer[8];
   sdo_config.buffer_write(buffer);
   int ret = ecrt_master_sdo_download(
@@ -234,6 +244,11 @@ void EcMaster::registerPDOInDomain(
 
 bool EcMaster::activate()
 {
+  if (master_ == nullptr) {
+    printWarning("Activate. Master is not available.");
+    return false;
+  }
+
   // register domain
   for (auto & iter : domain_info_) {
     DomainInfo * domain_info = iter.second;
@@ -277,6 +292,10 @@ bool EcMaster::activate()
 
 void EcMaster::update(uint32_t domain)
 {
+  if (master_ == nullptr) {
+    return;
+  }
+
   // receive process data
   ecrt_master_receive(master_);
 
@@ -323,6 +342,10 @@ void EcMaster::update(uint32_t domain)
 
 void EcMaster::readData(uint32_t domain)
 {
+  if (master_ == nullptr) {
+    return;
+  }
+
   // receive process data
   ecrt_master_receive(master_);
 
@@ -358,6 +381,10 @@ void EcMaster::readData(uint32_t domain)
 
 void EcMaster::writeData(uint32_t domain)
 {
+  if (master_ == nullptr) {
+    return;
+  }
+
   DomainInfo * domain_info = domain_info_.at(domain);
   if (domain_info == NULL) {
     throw std::runtime_error("Null domain info: " + std::to_string(domain));
@@ -501,6 +528,10 @@ void EcMaster::checkDomainState(uint32_t domain)
 
 void EcMaster::checkMasterState()
 {
+  if (master_ == nullptr) {
+    return;
+  }
+
   ec_master_state_t ms;
   ecrt_master_state(master_, &ms);
 

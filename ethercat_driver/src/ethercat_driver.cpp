@@ -470,6 +470,14 @@ CallbackReturn EthercatDriver::setupMaster()
   }
   master_ = std::make_shared<ethercat_interface::EcMaster>(master_id);
 
+  if (!master_ || !master_->isValid()) {
+    RCLCPP_ERROR(
+      rclcpp::get_logger("EthercatDriver"),
+      "Failed to reserve EtherCAT master %u. Is another process already using it?",
+      master_id);
+    return CallbackReturn::ERROR;
+  }
+
   return CallbackReturn::SUCCESS;
 }
 
@@ -529,9 +537,18 @@ CallbackReturn EthercatDriver::on_activate(
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Starting ...please wait...");
 
   // setup master
-  setupMaster();
+  if (setupMaster() != CallbackReturn::SUCCESS) {
+    return CallbackReturn::ERROR;
+  }
   // configure network
-  configNetwork();
+  if (configNetwork() != CallbackReturn::SUCCESS) {
+    return CallbackReturn::ERROR;
+  }
+
+  if (!master_ || !master_->isValid()) {
+    RCLCPP_ERROR(rclcpp::get_logger("EthercatDriver"), "EtherCAT master is not available.");
+    return CallbackReturn::ERROR;
+  }
 
   if (!master_->activate()) {
     RCLCPP_ERROR(rclcpp::get_logger("EthercatDriver"), "Activate EcMaster failed");
@@ -592,7 +609,9 @@ CallbackReturn EthercatDriver::on_deactivate(
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Stopping ...please wait...");
 
   // stop EC and disconnect
-  master_->stop();
+  if (master_) {
+    master_->stop();
+  }
 
   RCLCPP_INFO(
     rclcpp::get_logger("EthercatDriver"), "System successfully stopped!");
