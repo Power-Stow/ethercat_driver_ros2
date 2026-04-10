@@ -15,11 +15,10 @@
 #ifndef ETHERCAT_DRIVER__ETHERCAT_DRIVER_HPP_
 #define ETHERCAT_DRIVER__ETHERCAT_DRIVER_HPP_
 
-#include <unordered_map>
-#include <array>
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <pluginlib/class_loader.hpp>
 #include "hardware_interface/handle.hpp"
@@ -30,6 +29,7 @@
 #include "rclcpp_lifecycle/node_interfaces/lifecycle_node_interface.hpp"
 #include "rclcpp_lifecycle/state.hpp"
 #include "ethercat_driver/visibility_control.h"
+#include "ethercat_driver/transmission_coupling_base.hpp"
 #include "ethercat_interface/ec_slave.hpp"
 #include "ethercat_interface/ec_master.hpp"
 #include "yaml-cpp/yaml.h"
@@ -70,28 +70,12 @@ public:
   hardware_interface::return_type write(const rclcpp::Time &, const rclcpp::Duration &) override;
 
 protected:
-  struct DifferentialTransmissionConfig
-  {
-    std::array<std::size_t, 2> joint_indices{};
-    std::array<double, 2> actuator_reduction{1.0, 1.0};
-    std::array<double, 2> joint_reduction{1.0, 1.0};
-    std::array<double, 2> joint_offset{0.0, 0.0};
-  };
-
   std::vector<std::unordered_map<std::string, std::string>> getEcModuleParam(
     const std::string & urdf,
     const std::string & component_name,
     const std::string & component_type);
 
-  void configureDifferentialTransmissions();
-
-  void actuatorToJointDifferentialState(const DifferentialTransmissionConfig & config);
-
-  void jointToActuatorDifferentialCommand(const DifferentialTransmissionConfig & config);
-
-  int getStateInterfaceIndex(std::size_t joint_index, const std::string & interface_name) const;
-
-  int getCommandInterfaceIndex(std::size_t joint_index, const std::string & interface_name) const;
+  void configureTransmissions();
 
   uint16_t getAliasOrDefaultAlias(
     const std::unordered_map<std::string,
@@ -139,8 +123,8 @@ protected:
   std::vector<std::vector<double>> raw_joint_states_;
   std::vector<std::vector<double>> hw_sensor_states_;
   std::vector<std::vector<double>> hw_gpio_states_;
-  std::vector<bool> joint_uses_differential_transmission_;
-  std::vector<DifferentialTransmissionConfig> differential_transmissions_;
+  std::vector<bool> joint_uses_transmission_;
+  std::vector<std::unique_ptr<TransmissionCouplingBase>> transmissions_;
 
   pluginlib::ClassLoader<ethercat_interface::EcSlave> ec_loader_{
     "ethercat_interface", "ethercat_interface::EcSlave"};

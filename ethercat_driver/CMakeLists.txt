@@ -13,6 +13,7 @@ find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
+find_package(transmission_interface REQUIRED)
 find_package(ethercat_interface REQUIRED)
 find_package(yaml_cpp_vendor REQUIRED)
 
@@ -37,6 +38,7 @@ ament_target_dependencies(
   pluginlib
   rclcpp
   rclcpp_lifecycle
+  transmission_interface
   ethercat_interface
   yaml_cpp_vendor
 )
@@ -142,6 +144,7 @@ if(BUILD_TESTING)
     pluginlib
     rclcpp
     rclcpp_lifecycle
+    transmission_interface
     ethercat_interface
     yaml_cpp_vendor
   )
@@ -149,6 +152,26 @@ if(BUILD_TESTING)
   # Add yaml-cpp to test target as well
   target_include_directories(test_ethercat_safety_driver PRIVATE ${YAML_CPP_INCLUDE_DIRS})
   target_compile_options(test_ethercat_safety_driver PRIVATE ${YAML_CPP_CFLAGS_OTHER})
+
+  ament_add_gmock(
+    test_loader_backed_transmission_coupling
+    test/test_loader_backed_transmission_coupling.cpp)
+  target_include_directories(test_loader_backed_transmission_coupling PRIVATE include)
+  target_link_libraries(test_loader_backed_transmission_coupling
+    ${PROJECT_NAME}
+    ${YAML_CPP_LIBRARIES}
+  )
+  ament_target_dependencies(test_loader_backed_transmission_coupling
+    hardware_interface
+    pluginlib
+    rclcpp
+    rclcpp_lifecycle
+    transmission_interface
+    ethercat_interface
+    yaml_cpp_vendor
+  )
+  target_include_directories(test_loader_backed_transmission_coupling PRIVATE ${YAML_CPP_INCLUDE_DIRS})
+  target_compile_options(test_loader_backed_transmission_coupling PRIVATE ${YAML_CPP_CFLAGS_OTHER})
 endif()
 
 ## EXPORTS
@@ -163,6 +186,7 @@ ament_export_dependencies(
   pluginlib
   rclcpp
   rclcpp_lifecycle
+  transmission_interface
   ethercat_interface
   yaml_cpp_vendor
 )
