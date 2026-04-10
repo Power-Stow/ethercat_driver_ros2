@@ -15,6 +15,10 @@
 #include "ethercat_driver/ethercat_driver.hpp"
 
 #include <tinyxml2.h>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <regex>
 
@@ -23,6 +27,42 @@
 
 namespace ethercat_driver
 {
+
+namespace
+{
+
+constexpr auto kDifferentialTransmissionPlugin = "transmission_interface/DifferentialTransmission";
+
+int get_role_index(const std::string & role, const std::string & prefix)
+{
+  if (role.empty()) {
+    return -1;
+  }
+
+  const auto expected_prefix = prefix;
+  if (role.rfind(expected_prefix, 0) != 0) {
+    throw std::runtime_error(
+            "Unsupported transmission role '" + role + "'. Expected prefix '" + expected_prefix + "'.");
+  }
+
+  const auto suffix = role.substr(expected_prefix.size());
+  if (suffix == "1") {
+    return 0;
+  }
+  if (suffix == "2") {
+    return 1;
+  }
+
+  throw std::runtime_error(
+          "Unsupported transmission role '" + role + "'. Only roles ending in 1 or 2 are supported.");
+}
+
+double normalize_value(double value)
+{
+  return std::isnan(value) ? 0.0 : value;
+}
+
+}  // namespace
 
 unsigned int uint_from_string(const std::string & str)
 {
@@ -105,6 +145,7 @@ CallbackReturn EthercatDriver::on_init(
       info_.joints[j].state_interfaces.size(),
       std::numeric_limits<double>::quiet_NaN());
   }
+  raw_joint_states_ = hw_joint_states_;
   hw_sensor_states_.resize(info_.sensors.size());
   for (uint s = 0; s < info_.sensors.size(); s++) {
     hw_sensor_states_[s].resize(
@@ -125,6 +166,7 @@ CallbackReturn EthercatDriver::on_init(
       info_.joints[j].command_interfaces.size(),
       std::numeric_limits<double>::quiet_NaN());
   }
+  raw_joint_commands_ = hw_joint_commands_;
   hw_sensor_commands_.resize(info_.sensors.size());
   for (uint s = 0; s < info_.sensors.size(); s++) {
     hw_sensor_commands_[s].resize(
@@ -137,6 +179,9 @@ CallbackReturn EthercatDriver::on_init(
       info_.gpios[g].command_interfaces.size(),
       std::numeric_limits<double>::quiet_NaN());
   }
+
+  joint_uses_differential_transmission_.assign(info_.joints.size(), false);
+  configureDifferentialTransmissions();
 
   // Setup slave modules defined per joints in the URDF
   for (uint j = 0; j < info_.joints.size(); j++) {
@@ -156,8 +201,12 @@ CallbackReturn EthercatDriver::on_init(
       }
       try {
         auto module = ec_loader_.createSharedInstance(module_params[i].at("plugin"));
+        auto * state_interfaces = joint_uses_differential_transmission_[j] ?
+          &raw_joint_states_[j] : &hw_joint_states_[j];
+        auto * command_interfaces = joint_uses_differential_transmission_[j] ?
+          &raw_joint_commands_[j] : &hw_joint_commands_[j];
         if (!module->setupSlave(
-            module_params[i], &hw_joint_states_[j], &hw_joint_commands_[j]))
+            module_params[i], state_interfaces, command_interfaces))
         {
           RCLCPP_FATAL(
             rclcpp::get_logger("EthercatDriver"),
@@ -627,6 +676,9 @@ hardware_interface::return_type EthercatDriver::read(
   const std::unique_lock<std::mutex> lock(ec_mutex_, std::try_to_lock);
   if (lock.owns_lock() && activated_) {
     master_->readData();
+    for (const auto & config : differential_transmissions_) {
+      actuatorToJointDifferentialState(config);
+    }
   }
   return hardware_interface::return_type::OK;
 }
@@ -638,9 +690,197 @@ hardware_interface::return_type EthercatDriver::write(
   // try to lock so we can avoid blocking the read/write loop on the lock.
   const std::unique_lock<std::mutex> lock(ec_mutex_, std::try_to_lock);
   if (lock.owns_lock() && activated_) {
+    for (const auto & config : differential_transmissions_) {
+      jointToActuatorDifferentialCommand(config);
+    }
     master_->writeData();
   }
   return hardware_interface::return_type::OK;
+}
+
+void EthercatDriver::configureDifferentialTransmissions()
+{
+  differential_transmissions_.clear();
+
+  for (const auto & transmission : info_.transmissions) {
+    if (transmission.type != kDifferentialTransmissionPlugin) {
+      continue;
+    }
+
+    if (transmission.joints.size() != 2 || transmission.actuators.size() != 2) {
+      throw std::runtime_error(
+              "DifferentialTransmission requires exactly two joints and two actuators.");
+    }
+
+    DifferentialTransmissionConfig config;
+    std::array<bool, 2> joint_slot_filled{false, false};
+    std::array<bool, 2> actuator_slot_filled{false, false};
+
+    for (std::size_t i = 0; i < transmission.joints.size(); ++i) {
+      const auto & joint = transmission.joints[i];
+      auto slot = i;
+      if (!joint.role.empty()) {
+        slot = static_cast<std::size_t>(get_role_index(joint.role, "joint"));
+      }
+
+      auto joint_it = std::find_if(
+        info_.joints.begin(), info_.joints.end(),
+        [&joint](const auto & joint_info) { return joint_info.name == joint.name; });
+      if (joint_it == info_.joints.end()) {
+        throw std::runtime_error(
+                "DifferentialTransmission joint '" + joint.name + "' was not declared as a ros2_control joint.");
+      }
+
+      config.joint_indices[slot] = static_cast<std::size_t>(std::distance(info_.joints.begin(), joint_it));
+      config.joint_reduction[slot] = joint.mechanical_reduction;
+      config.joint_offset[slot] = joint.offset;
+      joint_slot_filled[slot] = true;
+      joint_uses_differential_transmission_[config.joint_indices[slot]] = true;
+    }
+
+    for (std::size_t i = 0; i < transmission.actuators.size(); ++i) {
+      const auto & actuator = transmission.actuators[i];
+      auto slot = i;
+      if (!actuator.role.empty()) {
+        slot = static_cast<std::size_t>(get_role_index(actuator.role, "actuator"));
+      }
+
+      config.actuator_reduction[slot] = actuator.mechanical_reduction;
+      actuator_slot_filled[slot] = true;
+    }
+
+    if (!joint_slot_filled[0] || !joint_slot_filled[1] || !actuator_slot_filled[0] ||
+      !actuator_slot_filled[1])
+    {
+      throw std::runtime_error("Incomplete DifferentialTransmission configuration.");
+    }
+
+    differential_transmissions_.push_back(config);
+  }
+}
+
+void EthercatDriver::actuatorToJointDifferentialState(const DifferentialTransmissionConfig & config)
+{
+  const auto first_joint_index = config.joint_indices[0];
+  const auto second_joint_index = config.joint_indices[1];
+
+  hw_joint_states_[first_joint_index] = raw_joint_states_[first_joint_index];
+  hw_joint_states_[second_joint_index] = raw_joint_states_[second_joint_index];
+
+  const auto first_position_index = getStateInterfaceIndex(first_joint_index, hardware_interface::HW_IF_POSITION);
+  const auto second_position_index = getStateInterfaceIndex(second_joint_index, hardware_interface::HW_IF_POSITION);
+  if (first_position_index >= 0 && second_position_index >= 0) {
+    const auto actuator_1 = normalize_value(raw_joint_states_[first_joint_index][first_position_index]);
+    const auto actuator_2 = normalize_value(raw_joint_states_[second_joint_index][second_position_index]);
+    hw_joint_states_[first_joint_index][first_position_index] =
+      ((actuator_1 / config.actuator_reduction[0]) + (actuator_2 / config.actuator_reduction[1])) /
+      (2.0 * config.joint_reduction[0]) + config.joint_offset[0];
+    hw_joint_states_[second_joint_index][second_position_index] =
+      ((actuator_1 / config.actuator_reduction[0]) - (actuator_2 / config.actuator_reduction[1])) /
+      (2.0 * config.joint_reduction[1]) + config.joint_offset[1];
+  }
+
+  const auto first_velocity_index = getStateInterfaceIndex(first_joint_index, hardware_interface::HW_IF_VELOCITY);
+  const auto second_velocity_index = getStateInterfaceIndex(second_joint_index, hardware_interface::HW_IF_VELOCITY);
+  if (first_velocity_index >= 0 && second_velocity_index >= 0) {
+    const auto actuator_1 = normalize_value(raw_joint_states_[first_joint_index][first_velocity_index]);
+    const auto actuator_2 = normalize_value(raw_joint_states_[second_joint_index][second_velocity_index]);
+    hw_joint_states_[first_joint_index][first_velocity_index] =
+      ((actuator_1 / config.actuator_reduction[0]) + (actuator_2 / config.actuator_reduction[1])) /
+      (2.0 * config.joint_reduction[0]);
+    hw_joint_states_[second_joint_index][second_velocity_index] =
+      ((actuator_1 / config.actuator_reduction[0]) - (actuator_2 / config.actuator_reduction[1])) /
+      (2.0 * config.joint_reduction[1]);
+  }
+
+  const auto first_effort_index = getStateInterfaceIndex(first_joint_index, hardware_interface::HW_IF_EFFORT);
+  const auto second_effort_index = getStateInterfaceIndex(second_joint_index, hardware_interface::HW_IF_EFFORT);
+  if (first_effort_index >= 0 && second_effort_index >= 0) {
+    const auto actuator_1 = normalize_value(raw_joint_states_[first_joint_index][first_effort_index]);
+    const auto actuator_2 = normalize_value(raw_joint_states_[second_joint_index][second_effort_index]);
+    hw_joint_states_[first_joint_index][first_effort_index] =
+      config.joint_reduction[0] *
+      (config.actuator_reduction[0] * actuator_1 + config.actuator_reduction[1] * actuator_2);
+    hw_joint_states_[second_joint_index][second_effort_index] =
+      config.joint_reduction[1] *
+      (config.actuator_reduction[0] * actuator_1 - config.actuator_reduction[1] * actuator_2);
+  }
+}
+
+void EthercatDriver::jointToActuatorDifferentialCommand(const DifferentialTransmissionConfig & config)
+{
+  const auto first_joint_index = config.joint_indices[0];
+  const auto second_joint_index = config.joint_indices[1];
+
+  raw_joint_commands_[first_joint_index] = hw_joint_commands_[first_joint_index];
+  raw_joint_commands_[second_joint_index] = hw_joint_commands_[second_joint_index];
+
+  const auto first_position_index = getCommandInterfaceIndex(first_joint_index, hardware_interface::HW_IF_POSITION);
+  const auto second_position_index = getCommandInterfaceIndex(second_joint_index, hardware_interface::HW_IF_POSITION);
+  if (first_position_index >= 0 && second_position_index >= 0) {
+    const auto joint_1 = normalize_value(hw_joint_commands_[first_joint_index][first_position_index]);
+    const auto joint_2 = normalize_value(hw_joint_commands_[second_joint_index][second_position_index]);
+    raw_joint_commands_[first_joint_index][first_position_index] =
+      config.actuator_reduction[0] *
+      (config.joint_reduction[0] * (joint_1 - config.joint_offset[0]) +
+      config.joint_reduction[1] * (joint_2 - config.joint_offset[1]));
+    raw_joint_commands_[second_joint_index][second_position_index] =
+      config.actuator_reduction[1] *
+      (config.joint_reduction[0] * (joint_1 - config.joint_offset[0]) -
+      config.joint_reduction[1] * (joint_2 - config.joint_offset[1]));
+  }
+
+  const auto first_velocity_index = getCommandInterfaceIndex(first_joint_index, hardware_interface::HW_IF_VELOCITY);
+  const auto second_velocity_index = getCommandInterfaceIndex(second_joint_index, hardware_interface::HW_IF_VELOCITY);
+  if (first_velocity_index >= 0 && second_velocity_index >= 0) {
+    const auto joint_1 = normalize_value(hw_joint_commands_[first_joint_index][first_velocity_index]);
+    const auto joint_2 = normalize_value(hw_joint_commands_[second_joint_index][second_velocity_index]);
+    raw_joint_commands_[first_joint_index][first_velocity_index] =
+      config.actuator_reduction[0] *
+      (config.joint_reduction[0] * joint_1 + config.joint_reduction[1] * joint_2);
+    raw_joint_commands_[second_joint_index][second_velocity_index] =
+      config.actuator_reduction[1] *
+      (config.joint_reduction[0] * joint_1 - config.joint_reduction[1] * joint_2);
+  }
+
+  const auto first_effort_index = getCommandInterfaceIndex(first_joint_index, hardware_interface::HW_IF_EFFORT);
+  const auto second_effort_index = getCommandInterfaceIndex(second_joint_index, hardware_interface::HW_IF_EFFORT);
+  if (first_effort_index >= 0 && second_effort_index >= 0) {
+    const auto joint_1 = normalize_value(hw_joint_commands_[first_joint_index][first_effort_index]);
+    const auto joint_2 = normalize_value(hw_joint_commands_[second_joint_index][second_effort_index]);
+    raw_joint_commands_[first_joint_index][first_effort_index] =
+      ((joint_1 / config.joint_reduction[0]) + (joint_2 / config.joint_reduction[1])) /
+      (2.0 * config.actuator_reduction[0]);
+    raw_joint_commands_[second_joint_index][second_effort_index] =
+      ((joint_1 / config.joint_reduction[0]) - (joint_2 / config.joint_reduction[1])) /
+      (2.0 * config.actuator_reduction[1]);
+  }
+}
+
+int EthercatDriver::getStateInterfaceIndex(
+  std::size_t joint_index,
+  const std::string & interface_name) const
+{
+  const auto & state_interfaces = info_.joints[joint_index].state_interfaces;
+  for (std::size_t i = 0; i < state_interfaces.size(); ++i) {
+    if (state_interfaces[i].name == interface_name) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+int EthercatDriver::getCommandInterfaceIndex(
+  std::size_t joint_index,
+  const std::string & interface_name) const
+{
+  const auto & command_interfaces = info_.joints[joint_index].command_interfaces;
+  for (std::size_t i = 0; i < command_interfaces.size(); ++i) {
+    if (command_interfaces[i].name == interface_name) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
 }
 
 std::vector<std::unordered_map<std::string, std::string>> EthercatDriver::getEcModuleParam(
