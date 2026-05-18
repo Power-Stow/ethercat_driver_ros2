@@ -66,7 +66,7 @@ private:
     const std::vector<hardware_interface::ComponentInfo> & joints,
     const hardware_interface::ActuatorInfo & actuator,
     std::size_t actuator_slot,
-    const std::vector<std::size_t> & joint_indices);
+    std::size_t actuator_slot_count);
 
   static int find_interface_index(
     const std::vector<hardware_interface::InterfaceInfo> & interfaces,

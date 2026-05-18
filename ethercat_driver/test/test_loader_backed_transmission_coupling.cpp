@@ -103,26 +103,28 @@ TEST(LoaderBackedTransmissionCouplingTest, differential_transmission_maps_state_
     make_transmission_joint("left_joint", "joint1"),
     make_transmission_joint("right_joint", "joint2")};
   transmission.actuators = {
-    make_transmission_actuator("left_joint", "actuator1"),
-    make_transmission_actuator("right_joint", "actuator2")};
+    make_transmission_actuator("left_motor", "actuator1"),
+    make_transmission_actuator("right_motor", "actuator2")};
 
   std::vector<hardware_interface::ComponentInfo> joints = {
+    make_joint("left_motor"),
+    make_joint("right_motor"),
     make_joint("left_joint"),
     make_joint("right_joint")};
 
   coupling.configure(transmission, joints);
 
-  std::vector<std::vector<double>> raw_joint_states{{4.0, 2.0}, {2.0, 0.0}};
-  std::vector<std::vector<double>> hw_joint_states{{0.0, 0.0}, {0.0, 0.0}};
+  std::vector<std::vector<double>> raw_joint_states{{4.0, 2.0}, {2.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}};
+  std::vector<std::vector<double>> hw_joint_states{{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}};
   coupling.actuator_to_joint(raw_joint_states, hw_joint_states);
 
-  EXPECT_DOUBLE_EQ(hw_joint_states[0][0], 3.0);
-  EXPECT_DOUBLE_EQ(hw_joint_states[1][0], 1.0);
-  EXPECT_DOUBLE_EQ(hw_joint_states[0][1], 1.0);
-  EXPECT_DOUBLE_EQ(hw_joint_states[1][1], 1.0);
+  EXPECT_DOUBLE_EQ(hw_joint_states[2][0], 3.0);
+  EXPECT_DOUBLE_EQ(hw_joint_states[3][0], 1.0);
+  EXPECT_DOUBLE_EQ(hw_joint_states[2][1], 1.0);
+  EXPECT_DOUBLE_EQ(hw_joint_states[3][1], 1.0);
 
-  std::vector<std::vector<double>> hw_joint_commands{{3.0, 1.0}, {1.0, 1.0}};
-  std::vector<std::vector<double>> raw_joint_commands{{0.0, 0.0}, {0.0, 0.0}};
+  std::vector<std::vector<double>> hw_joint_commands{{0.0, 0.0}, {0.0, 0.0}, {3.0, 1.0}, {1.0, 1.0}};
+  std::vector<std::vector<double>> raw_joint_commands{{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}};
   coupling.joint_to_actuator(hw_joint_commands, raw_joint_commands);
 
   EXPECT_DOUBLE_EQ(raw_joint_commands[0][0], 4.0);

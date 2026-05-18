@@ -17,6 +17,9 @@
 #ifndef ETHERCAT_GENERIC_PLUGINS__GENERIC_EC_CIA402_DRIVE_HPP_
 #define ETHERCAT_GENERIC_PLUGINS__GENERIC_EC_CIA402_DRIVE_HPP_
 
+#include <chrono>
+#include <fstream>
+#include <cstdint>
 #include <vector>
 #include <string>
 #include <unordered_map>
@@ -47,6 +50,12 @@ public:
     std::vector<double> * state_interface,
     std::vector<double> * command_interface);
 
+  /// @brief Setup CSV dumping internals from plugin parameters.
+  void setup_csv_dump();
+
+  /// @brief Dump one CSV row for the current cycle.
+  void dump_cycle_csv_row();
+
   int8_t mode_of_operation_display_ = 0;
   int8_t mode_of_operation_ = -1;
 
@@ -66,6 +75,16 @@ protected:
   int fault_reset_command_interface_index_ = -1;
   bool last_fault_reset_command_ = false;
   double last_position_ = std::numeric_limits<double>::quiet_NaN();
+
+  bool csv_dump_enabled_ = false;
+  bool csv_header_written_ = false;
+  std::string csv_dump_path_;
+  std::size_t csv_flush_every_n_ = 1;
+  std::uint64_t csv_cycle_counter_ = 0;
+  std::ofstream csv_dump_file_;
+  std::vector<std::size_t> csv_rpdo_domain_indices_;
+  std::vector<std::size_t> csv_tpdo_domain_indices_;
+  std::chrono::steady_clock::time_point csv_t0_ = std::chrono::steady_clock::now();
 
   /** returns device state based upon the status_word */
   DeviceState deviceState(uint16_t status_word);

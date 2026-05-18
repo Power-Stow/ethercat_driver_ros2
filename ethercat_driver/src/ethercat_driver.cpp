@@ -21,9 +21,25 @@
 #include <stdexcept>
 #include <string>
 #include <regex>
+#include <limits>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/rclcpp.hpp"
+
+namespace
+{
+void cleanup_master(
+  std::shared_ptr<ethercat_interface::EcMaster> & master,
+  bool & activated)
+{
+  activated = false;
+
+  if (master) {
+    master->shutdown();
+    master.reset();
+  }
+}
+}  // namespace
 
 namespace ethercat_driver
 {
@@ -480,6 +496,12 @@ CallbackReturn EthercatDriver::setupMaster()
       return CallbackReturn::ERROR;
     }
   }
+
+  if (master_) {
+    master_->shutdown();
+    master_.reset();
+  }
+
   master_ = std::make_shared<ethercat_interface::EcMaster>(master_id);
 
   if (!master_ || !master_->isValid()) {
@@ -509,9 +531,29 @@ CallbackReturn EthercatDriver::configNetwork()
     }
   }
 
+  uint32_t dc_sync0_shift_ns = 0;
+  if (info_.hardware_parameters.find("dc_sync0_shift_ns") != info_.hardware_parameters.end()) {
+    try {
+      const unsigned long parsed = std::stoul(info_.hardware_parameters["dc_sync0_shift_ns"]);
+      if (parsed > std::numeric_limits<uint32_t>::max()) {
+        RCLCPP_FATAL(
+          rclcpp::get_logger("EthercatDriver"),
+          "Invalid dc_sync0_shift_ns: value exceeds uint32_t range");
+        return CallbackReturn::ERROR;
+      }
+      dc_sync0_shift_ns = static_cast<uint32_t>(parsed);
+    } catch (std::exception & e) {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"),
+        "Invalid dc_sync0_shift_ns (%s)!", e.what());
+      return CallbackReturn::ERROR;
+    }
+  }
+
   // start EC and wait until state operative
 
   master_->setCtrlFrequency(control_frequency_);
+  master_->setDcSync0Shift(dc_sync0_shift_ns);
 
   for (auto i = 0ul; i < ec_modules_.size(); i++) {
     master_->addSlave(ec_modules_[i].get());
@@ -554,6 +596,10 @@ CallbackReturn EthercatDriver::on_activate(
   }
   // configure network
   if (configNetwork() != CallbackReturn::SUCCESS) {
+    if (master_) {
+      master_->shutdown();
+      master_.reset();
+    }
     return CallbackReturn::ERROR;
   }
 
@@ -564,6 +610,10 @@ CallbackReturn EthercatDriver::on_activate(
 
   if (!master_->activate()) {
     RCLCPP_ERROR(rclcpp::get_logger("EthercatDriver"), "Activate EcMaster failed");
+    if (master_) {
+      master_->shutdown();
+      master_.reset();
+    }
     return CallbackReturn::ERROR;
   }
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Activated EcMaster!");
@@ -620,10 +670,7 @@ CallbackReturn EthercatDriver::on_deactivate(
 
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Stopping ...please wait...");
 
-  // stop EC and disconnect
-  if (master_) {
-    master_->stop();
-  }
+  cleanup_master(master_, activated_);
 
   RCLCPP_INFO(
     rclcpp::get_logger("EthercatDriver"), "System successfully stopped!");
@@ -643,7 +690,42 @@ hardware_interface::return_type EthercatDriver::read(
       transmission->actuator_to_joint(raw_joint_states_, hw_joint_states_);
     }
   }
+  if (!lock.owns_lock()) {
+    RCLCPP_WARN_THROTTLE(
+      rclcpp::get_logger("EthercatDriver"), *get_clock(), 1000,
+      "Could not acquire lock to read data from EtherCAT master, skipping this cycle.");
+  }
   return hardware_interface::return_type::OK;
+}
+
+CallbackReturn EthercatDriver::on_shutdown(
+  const rclcpp_lifecycle::State & /*previous_state*/)
+{
+  const std::lock_guard lock(ec_mutex_);
+
+  RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Shutdown cleanup ...please wait...");
+
+  cleanup_master(master_, activated_);
+  cleanupPluginsForShutdown();
+
+  RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Shutdown cleanup complete.");
+
+  return CallbackReturn::SUCCESS;
+}
+
+CallbackReturn EthercatDriver::on_error(
+  const rclcpp_lifecycle::State & /*previous_state*/)
+{
+  const std::lock_guard lock(ec_mutex_);
+
+  RCLCPP_ERROR(rclcpp::get_logger("EthercatDriver"), "Error cleanup ...please wait...");
+
+  cleanup_master(master_, activated_);
+  cleanupPluginsForShutdown();
+
+  RCLCPP_ERROR(rclcpp::get_logger("EthercatDriver"), "Error cleanup complete.");
+
+  return CallbackReturn::SUCCESS;
 }
 
 hardware_interface::return_type EthercatDriver::write(
@@ -657,6 +739,11 @@ hardware_interface::return_type EthercatDriver::write(
       transmission->joint_to_actuator(hw_joint_commands_, raw_joint_commands_);
     }
     master_->writeData();
+  }
+  if (!lock.owns_lock()) {
+    RCLCPP_WARN_THROTTLE(
+      rclcpp::get_logger("EthercatDriver"), *get_clock(), 1000,
+      "Could not acquire lock to write data to EtherCAT master, skipping this cycle.");
   }
   return hardware_interface::return_type::OK;
 }
@@ -915,6 +1002,15 @@ void EthercatDriver::configTransferNetwork()
 {
   // This method can be used for additional transfer network configuration if needed
   // Currently, transfer network configuration is handled in on_activate()
+}
+
+void EthercatDriver::cleanupPluginsForShutdown()
+{
+  ec_modules_.clear();
+  ec_module_parameters_.clear();
+  ec_transfer_nets_.clear();
+  ec_transfer_masters_.clear();
+  ec_transfer_slaves_.clear();
 }
 
 }  // namespace ethercat_driver

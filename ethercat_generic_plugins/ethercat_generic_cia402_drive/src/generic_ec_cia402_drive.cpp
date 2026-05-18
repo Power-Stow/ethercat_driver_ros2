@@ -15,6 +15,11 @@
 // Author: Maciej Bednarczyk (macbednarczyk@gmail.com)
 
 #include <numeric>
+#include <algorithm>
+#include <array>
+#include <ctime>
+#include <filesystem>
+#include <sstream>
 
 #include "ethercat_generic_plugins/generic_ec_cia402_drive.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -22,9 +27,38 @@
 namespace ethercat_generic_plugins
 {
 
+namespace
+{
+
+double raw_value_for_csv(const ethercat_interface::EcPdoChannelManager & channel)
+{
+  const auto & d = channel.data();
+  const double logged_value = d.last_value;
+
+  // RxPDO = from PC to Device
+  if (channel.pdo_type == ethercat_interface::RPDO) {
+    return logged_value; // value is in already in raw space (i.e. already scaled by factor and offset to convert to raw)
+  }
+
+  // TxPDO = from Device to PC
+  if (d.factor != 0.0) {
+    return (logged_value - d.offset) / d.factor; // value has been converted to physical space before being stored, so convert back to raw space
+  }
+
+  return logged_value;
+}
+
+}  // namespace
+
 EcCiA402Drive::EcCiA402Drive()
 : GenericEcSlave() {}
-EcCiA402Drive::~EcCiA402Drive() {}
+
+EcCiA402Drive::~EcCiA402Drive()
+{
+  if (csv_dump_file_.is_open()) {
+    csv_dump_file_.close();
+  }
+}
 
 bool EcCiA402Drive::initialized() {return initialized_;}
 
@@ -45,6 +79,131 @@ void EcCiA402Drive::updateState()
   last_state_ = state_;
   counter_++;
   initialized_ = is_operational_;
+}
+
+void EcCiA402Drive::setup_csv_dump()
+{
+  if (parameters_.find("csv_dump_enabled") != parameters_.end()) {
+    const std::string & value = parameters_["csv_dump_enabled"];
+    csv_dump_enabled_ = (value == "true" || value == "1" || value == "True");
+  }
+
+  if (!csv_dump_enabled_) {
+    return;
+  }
+
+  if (parameters_.find("csv_dump_path") != parameters_.end()) {
+    csv_dump_path_ = parameters_["csv_dump_path"];
+  } else {
+    std::array<char, 64> timestamp_buffer{};
+    std::time_t now = std::time(nullptr);
+    std::tm tm_now;
+    if (nullptr != localtime_r(&now, &tm_now) &&
+      0 < std::strftime(
+        timestamp_buffer.data(),
+        timestamp_buffer.size(),
+        "log_%Y%m%d_%H%M%S",
+        &tm_now))
+    {
+      std::stringstream path;
+      path << "logs/" << timestamp_buffer.data()
+           << "_cia402_a" << alias_ << "_p" << position_ << ".csv";
+      csv_dump_path_ = path.str();
+    } else {
+      std::stringstream path;
+      path << "logs/log_cia402_a" << alias_ << "_p" << position_ << ".csv";
+      csv_dump_path_ = path.str();
+    }
+  }
+
+  if (parameters_.find("csv_dump_flush_every_n") != parameters_.end()) {
+    csv_flush_every_n_ = std::max(
+      static_cast<std::size_t>(1),
+      static_cast<std::size_t>(std::stoul(parameters_["csv_dump_flush_every_n"])));
+  }
+
+  csv_rpdo_domain_indices_.clear();
+  csv_tpdo_domain_indices_.clear();
+  for (std::size_t domain_idx = 0; domain_idx < domain_map_.size(); ++domain_idx) {
+    const auto channel_idx = domain_map_[domain_idx];
+    const auto * channel = pdo_channels_info_[channel_idx];
+    if (channel->pdo_type == ethercat_interface::RPDO) {
+      csv_rpdo_domain_indices_.push_back(domain_idx);
+    } else if (channel->pdo_type == ethercat_interface::TPDO) {
+      csv_tpdo_domain_indices_.push_back(domain_idx);
+    }
+  }
+
+  const auto csv_parent_dir = std::filesystem::path(csv_dump_path_).parent_path();
+  if (!csv_parent_dir.empty()) {
+    std::error_code ec;
+    std::filesystem::create_directories(csv_parent_dir, ec);
+  }
+
+  csv_dump_file_.open(csv_dump_path_, std::ios::out | std::ios::trunc);
+  if (!csv_dump_file_.is_open()) {
+    RCLCPP_ERROR(
+      rclcpp::get_logger("EthercatDriver"),
+      "EcCiA402Drive: failed to open CSV dump file: %s",
+      csv_dump_path_.c_str());
+    csv_dump_enabled_ = false;
+    return;
+  }
+
+  csv_dump_file_ << "timestamp_ns,cycle,phase";
+  for (const auto domain_idx : csv_rpdo_domain_indices_) {
+    const auto channel_idx = domain_map_[domain_idx];
+    const auto * channel = pdo_channels_info_[channel_idx];
+    csv_dump_file_ << ",rpdo_"
+                   << channel->index_hex_str() << "_"
+                   << channel->sub_index_hex_str() << "_"
+                   << channel->interface_name();
+  }
+  for (const auto domain_idx : csv_tpdo_domain_indices_) {
+    const auto channel_idx = domain_map_[domain_idx];
+    const auto * channel = pdo_channels_info_[channel_idx];
+    csv_dump_file_ << ",tpdo_"
+                   << channel->index_hex_str() << "_"
+                   << channel->sub_index_hex_str() << "_"
+                   << channel->interface_name();
+  }
+  csv_dump_file_ << "\n";
+  csv_header_written_ = true;
+  csv_t0_ = std::chrono::steady_clock::now();
+
+  RCLCPP_INFO(
+    rclcpp::get_logger("EthercatDriver"),
+    "EcCiA402Drive: CSV dump enabled, output: %s",
+    csv_dump_path_.c_str());
+}
+
+void EcCiA402Drive::dump_cycle_csv_row()
+{
+  if (!csv_dump_enabled_ || !csv_header_written_ || !csv_dump_file_.is_open()) {
+    return;
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  const auto timestamp_ns =
+    std::chrono::duration_cast<std::chrono::nanoseconds>(now - csv_t0_).count();
+
+  csv_dump_file_ << timestamp_ns << "," << csv_cycle_counter_ << "," << process_phase();
+  for (const auto domain_idx : csv_rpdo_domain_indices_) {
+    const auto channel_idx = domain_map_[domain_idx];
+    const auto * channel = pdo_channels_info_[channel_idx];
+    csv_dump_file_ << "," << raw_value_for_csv(*channel);
+  }
+  for (const auto domain_idx : csv_tpdo_domain_indices_) {
+    const auto channel_idx = domain_map_[domain_idx];
+    const auto * channel = pdo_channels_info_[channel_idx];
+    csv_dump_file_ << "," << raw_value_for_csv(*channel);
+  }
+  csv_dump_file_ << "\n";
+  ++csv_cycle_counter_;
+
+  if (csv_flush_every_n_ <= 1 || (csv_cycle_counter_ % csv_flush_every_n_) == 0U) {
+    csv_dump_file_.flush();
+  }
 }
 
 void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
@@ -116,6 +275,7 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
   // CHECK FOR STATE CHANGE
   if (entry_idx == domain_map_.size() - 1) {  // if last entry in domain
     updateState();
+    dump_cycle_csv_row();
   }
 }
 
@@ -147,6 +307,8 @@ bool EcCiA402Drive::setupSlave(
   if (parameters_.find("command_interface/reset_fault") != parameters_.end()) {
     fault_reset_command_interface_index_ = std::stoi(parameters_["command_interface/reset_fault"]);
   }
+
+  setup_csv_dump();
 
   return true;
 }

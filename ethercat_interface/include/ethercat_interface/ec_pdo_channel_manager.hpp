@@ -192,7 +192,7 @@ public:
   std::string sub_index_hex_str() const
   {
     std::stringstream ss;
-    ss << "0x" << std::hex << sub_index;
+    ss << "0x" << std::hex << +sub_index;
     return ss.str();
   }
 

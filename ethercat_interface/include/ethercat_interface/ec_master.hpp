@@ -23,6 +23,7 @@
 #include <map>
 #include <chrono>
 #include <iostream>
+#include <stdexcept>
 #include "ethercat_interface/ec_slave.hpp"
 #include "ethercat_interface/ec_transfer.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -34,6 +35,12 @@ namespace ethercat_interface
 inline uint64_t EC_NEWTIMEVAL2NANO(struct timespec & TV)
 {
   return (TV.tv_sec - 946684800ULL) * 1000000000ULL + TV.tv_nsec;
+}
+
+inline uint64_t EC_MONOTONIC2NANO(const struct timespec & TV)
+{
+  return static_cast<uint64_t>(TV.tv_sec) * 1000000000ULL +
+         static_cast<uint64_t>(TV.tv_nsec);
 }
 
 class EcMemoryEntry
@@ -156,6 +163,9 @@ public:
   /** stop the control loop. use within callback, or from a separate thread. */
   virtual void stop() {running_ = false;}
 
+  /** stop and release the IgH master. Do not call from realtime context. */
+  virtual void shutdown();
+
   /** time of last ethercat update, since calling run. stops if stop called.
    *  returns actual time. use elapsedCycles()/frequency for discrete time at last update. */
   virtual double elapsedTime();
@@ -179,8 +189,14 @@ public:
 
   void setCtrlFrequency(double frequency)
   {
-    interval_ = 1000000000.0 / frequency;
+    if (frequency <= 0.0) {
+      throw std::runtime_error("EtherCAT control frequency must be > 0");
+    }
+    interval_ = static_cast<uint32_t>(1000000000.0 / frequency);
   }
+
+  /** SYNC0 shift in ns. Start with 0, or set this to the value used by your C program. */
+  void setDcSync0Shift(uint32_t shift_time_ns) {dc_sync0_shift_ns_ = shift_time_ns;}
 
   uint32_t getInterval() {return interval_;}
 
@@ -256,6 +272,12 @@ protected:
   /** check for change in the slave states */
   void checkSlaveStates();
 
+  /** call IgH DC sync functions from a consistent point in the cycle */
+  void syncDistributedClocks();
+
+  /** monotonic application time used for IgH DC synchronization */
+  static uint64_t applicationTimeNs();
+
   /** print warning message to terminal */
   inline
   static void printWarning(const std::string & message)
@@ -301,6 +323,8 @@ protected:
   uint32_t check_state_frequency_ = 10;
 
   uint32_t interval_;
+
+  uint32_t dc_sync0_shift_ns_ = 0;
 
   /** Data transfers (necessary for transfer communication) */
   std::vector<EcTransferInfo> transfers_;

@@ -70,11 +70,49 @@ EcMaster::~EcMaster()
     //TODO verify what this piece of code was here for
   }
   */
+  shutdown();
+}
+
+void EcMaster::shutdown()
+{
+  std::cout << "[EcMaster] shutdown(): begin" << std::endl;
+
+  running_ = false;
+
   for (auto & domain : domain_info_) {
     if (domain.second != NULL) {
       delete domain.second;
     }
   }
+
+  domain_info_.clear();
+  slave_info_.clear();
+  transfers_.clear();
+
+  if (master_ != NULL) {
+    std::cout << "[EcMaster] shutdown(): releasing IgH master" << std::endl;
+    ecrt_release_master(master_);
+    master_ = NULL;
+    std::cout << "[EcMaster] shutdown(): IgH master released" << std::endl;
+  } else {
+    std::cout << "[EcMaster] shutdown(): master already null" << std::endl;
+  }
+
+  std::cout << "[EcMaster] shutdown(): done" << std::endl;
+}
+
+uint64_t EcMaster::applicationTimeNs()
+{
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return EC_MONOTONIC2NANO(t);
+}
+
+void EcMaster::syncDistributedClocks()
+{
+  ecrt_master_application_time(master_, applicationTimeNs());
+  ecrt_master_sync_reference_clock(master_);
+  ecrt_master_sync_slave_clocks(master_);
 }
 
 void EcMaster::addSlave(uint16_t alias, uint16_t position, EcSlave * slave)
@@ -111,14 +149,18 @@ void EcMaster::addSlave(EcSlave * slave)
   // check and setup dc
 
   if (slave->assign_activate_dc_sync()) {
-    struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    ecrt_master_application_time(master_, EC_NEWTIMEVAL2NANO(t));
+    if (interval_ == 0) {
+      throw std::runtime_error(
+        "EtherCAT DC requested, but control frequency/interval is not configured");
+    }
+
+    ecrt_master_application_time(master_, applicationTimeNs());
+
     ecrt_slave_config_dc(
       slave_info.config,
       slave->assign_activate_dc_sync(),
       interval_,
-      interval_ - (t.tv_nsec % (interval_)),
+      dc_sync0_shift_ns_,
       0,
       0);
   }
@@ -264,9 +306,7 @@ bool EcMaster::activate()
     }
   }
   // set application time
-  struct timespec t;
-  clock_gettime(CLOCK_MONOTONIC, &t);
-  ecrt_master_application_time(master_, EC_NEWTIMEVAL2NANO(t));
+  ecrt_master_application_time(master_, applicationTimeNs());
 
   // activate master
   bool activate_status = ecrt_master_activate(master_);
@@ -321,17 +361,13 @@ void EcMaster::update(uint32_t domain)
 
   // read and write process data
   for (DomainInfo::Entry & entry : domain_info->entries) {
+    entry.slave->set_process_phase("update");
     for (int i = 0; i < entry.num_pdos; ++i) {
       (entry.slave)->processData(i, domain_info->domain_pd + entry.offset[i]);
     }
   }
 
-  struct timespec t;
-
-  clock_gettime(CLOCK_REALTIME, &t);
-  ecrt_master_application_time(master_, EC_NEWTIMEVAL2NANO(t));
-  ecrt_master_sync_reference_clock(master_);
-  ecrt_master_sync_slave_clocks(master_);
+  syncDistributedClocks();
 
   // send process data
   ecrt_domain_queue(domain_info->domain);
@@ -371,6 +407,7 @@ void EcMaster::readData(uint32_t domain)
 
   // read and write process data
   for (DomainInfo::Entry & entry : domain_info->entries) {
+    entry.slave->set_process_phase("read");
     for (int i = 0; i < entry.num_pdos; ++i) {
       (entry.slave)->processData(i, domain_info->domain_pd + entry.offset[i]);
     }
@@ -392,17 +429,13 @@ void EcMaster::writeData(uint32_t domain)
 
   // read and write process data
   for (DomainInfo::Entry & entry : domain_info->entries) {
+    entry.slave->set_process_phase("write");
     for (int i = 0; i < entry.num_pdos; ++i) {
       (entry.slave)->processData(i, domain_info->domain_pd + entry.offset[i]);
     }
   }
 
-  struct timespec t;
-
-  clock_gettime(CLOCK_REALTIME, &t);
-  ecrt_master_application_time(master_, EC_NEWTIMEVAL2NANO(t));
-  ecrt_master_sync_reference_clock(master_);
-  ecrt_master_sync_slave_clocks(master_);
+  syncDistributedClocks();
 
   // send process data
   ecrt_domain_queue(domain_info->domain);

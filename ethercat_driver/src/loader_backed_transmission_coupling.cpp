@@ -117,12 +117,25 @@ void LoaderBackedTransmissionCoupling::configure(
         find_interface_index(joints[joint_index].command_interfaces, hardware_interface::HW_IF_EFFORT)});
   }
 
+  std::vector<std::size_t> actuator_storage_by_slot(
+    transmission_info.actuators.size(), std::numeric_limits<std::size_t>::max());
+
   for (std::size_t actuator_order = 0; actuator_order < transmission_info.actuators.size(); ++actuator_order) {
     const auto & actuator = transmission_info.actuators[actuator_order];
     actuator_names_.push_back(actuator.name);
     const auto actuator_slot = role_to_slot(actuator.role, "actuator", actuator_order);
+    if (actuator_slot >= actuator_storage_by_slot.size()) {
+      throw std::runtime_error(
+              "Transmission actuator role slot out of range for actuator '" + actuator.name + "'.");
+    }
+    if (actuator_storage_by_slot[actuator_slot] != std::numeric_limits<std::size_t>::max()) {
+      throw std::runtime_error(
+              "Duplicate transmission actuator role slot for actuator '" + actuator.name + "'.");
+    }
+
     const auto actuator_index = resolve_actuator_index(
-      joints, actuator, actuator_slot, joint_storage_by_slot);
+      joints, actuator, actuator_slot, actuator_storage_by_slot.size());
+    actuator_storage_by_slot[actuator_slot] = actuator_index;
     actuator_indices_.push_back(actuator_index);
     actuator_state_interface_indices_.push_back(
       InterfaceIndices{
@@ -242,27 +255,15 @@ std::size_t LoaderBackedTransmissionCoupling::resolve_actuator_index(
   const std::vector<hardware_interface::ComponentInfo> & joints,
   const hardware_interface::ActuatorInfo & actuator,
   std::size_t actuator_slot,
-  const std::vector<std::size_t> & joint_indices)
+  std::size_t actuator_slot_count)
 {
-  if (actuator_slot >= joint_indices.size()) {
+  if (actuator_slot >= actuator_slot_count) {
     throw std::runtime_error(
-            "Transmission actuator count exceeds joint count for transmission actuator '" +
+            "Transmission actuator role slot out of range for transmission actuator '" +
             actuator.name + "'.");
   }
 
-  if (joint_indices[actuator_slot] == std::numeric_limits<std::size_t>::max()) {
-    throw std::runtime_error(
-            "Transmission actuator '" + actuator.name + "' references an unset joint role slot.");
-  }
-
-  auto actuator_index = find_joint_index(joints, actuator.name);
-  if (actuator_index != joint_indices[actuator_slot]) {
-    const auto mapped_joint_name = joints[joint_indices[actuator_slot]].name;
-    throw std::runtime_error(
-            "Transmission actuator '" + actuator.name + "' must match mapped joint '" +
-            mapped_joint_name + "' in EtherCAT driver.");
-  }
-  return actuator_index;
+  return find_joint_index(joints, actuator.name);
 }
 
 int LoaderBackedTransmissionCoupling::find_interface_index(
