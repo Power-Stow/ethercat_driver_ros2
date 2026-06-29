@@ -235,6 +235,9 @@ CallbackReturn EthercatDriver::on_init(
       }
       try {
         auto module = ec_loader_.createSharedInstance(module_params[i].at("plugin"));
+        module->setAliasAndPosition(
+          getAliasOrDefaultAlias(module_params[i]),
+          std::stoul(module_params[i].at("position")));
         auto * state_interfaces = joint_uses_transmission_[j] ?
           &raw_joint_states_[j] : &hw_joint_states_[j];
         auto * command_interfaces = joint_uses_transmission_[j] ?
@@ -247,9 +250,6 @@ CallbackReturn EthercatDriver::on_init(
             "Setup of Joint module %li FAILED.", i + 1);
           return CallbackReturn::ERROR;
         }
-        module->setAliasAndPosition(
-          getAliasOrDefaultAlias(module_params[i]),
-          std::stoul(module_params[i].at("position")));
         ec_modules_.push_back(module);
       } catch (pluginlib::PluginlibException & ex) {
         RCLCPP_FATAL(
@@ -278,6 +278,9 @@ CallbackReturn EthercatDriver::on_init(
       }
       try {
         auto module = ec_loader_.createSharedInstance(module_params[i].at("plugin"));
+        module->setAliasAndPosition(
+          getAliasOrDefaultAlias(module_params[i]),
+          std::stoul(module_params[i].at("position")));
         if (!module->setupSlave(
             module_params[i], &hw_gpio_states_[g], &hw_gpio_commands_[g]))
         {
@@ -286,9 +289,6 @@ CallbackReturn EthercatDriver::on_init(
             "Setup of GPIO module %li FAILED.", i + 1);
           return CallbackReturn::ERROR;
         }
-        module->setAliasAndPosition(
-          getAliasOrDefaultAlias(module_params[i]),
-          std::stoul(module_params[i].at("position")));
         ec_modules_.push_back(module);
       } catch (pluginlib::PluginlibException & ex) {
         RCLCPP_FATAL(
@@ -317,6 +317,9 @@ CallbackReturn EthercatDriver::on_init(
       }
       try {
         auto module = ec_loader_.createSharedInstance(module_params[i].at("plugin"));
+        module->setAliasAndPosition(
+          getAliasOrDefaultAlias(module_params[i]),
+          std::stoul(module_params[i].at("position")));
         if (!module->setupSlave(
             module_params[i], &hw_sensor_states_[s], &hw_sensor_commands_[s]))
         {
@@ -325,9 +328,6 @@ CallbackReturn EthercatDriver::on_init(
             "Setup of Sensor module %li FAILED.", i + 1);
           return CallbackReturn::ERROR;
         }
-        module->setAliasAndPosition(
-          getAliasOrDefaultAlias(module_params[i]),
-          std::stoul(module_params[i].at("position")));
         ec_modules_.push_back(module);
       } catch (pluginlib::PluginlibException & ex) {
         RCLCPP_FATAL(
@@ -374,6 +374,9 @@ CallbackReturn EthercatDriver::on_init(
     for (const auto & transfer_module_param : transfer_module_params) {
       try {
         auto ec_module = ec_loader_.createSharedInstance(transfer_module_param.at("plugin"));
+        ec_module->setAliasAndPosition(
+          getAliasOrDefaultAlias(transfer_module_param),
+          std::stoul(transfer_module_param.at("position")));
         if (!ec_module->setupSlave(
             transfer_module_param, &empty_interface_, &empty_interface_))
         {
@@ -385,9 +388,6 @@ CallbackReturn EthercatDriver::on_init(
         }
 
         auto idx = ec_modules_.size();
-        ec_module->setAliasAndPosition(
-          getAliasOrDefaultAlias(transfer_module_param),
-          std::stoul(transfer_module_param.at("position")));
         ec_modules_.push_back(ec_module);
         ec_transfer_slaves_.push_back(idx);
       } catch (const pluginlib::PluginlibException & ex) {

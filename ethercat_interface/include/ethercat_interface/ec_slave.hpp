@@ -88,8 +88,8 @@ public:
   }
 
 public:
-  uint16_t alias_;        //< Slave alias.
-  uint16_t position_;     //< Index after alias. If alias is zero, stores the ring position.
+  uint16_t alias_{0};        //< Slave alias.
+  uint16_t position_{0};     //< Index after alias. If alias is zero, stores the ring position.
   uint32_t vendor_id_;   //< Slave vendor ID.
   uint32_t product_id_;  //< Slave product code.
 
