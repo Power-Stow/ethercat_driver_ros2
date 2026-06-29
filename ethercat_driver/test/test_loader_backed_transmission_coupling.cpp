@@ -133,6 +133,46 @@ TEST(LoaderBackedTransmissionCouplingTest, differential_transmission_maps_state_
   EXPECT_DOUBLE_EQ(raw_joint_commands[1][1], 0.0);
 }
 
+TEST(LoaderBackedTransmissionCouplingTest, differential_transmission_uses_role_slots_not_declaration_order)
+{
+  ethercat_driver::LoaderBackedTransmissionCoupling coupling;
+  hardware_interface::TransmissionInfo transmission;
+  transmission.name = "diff";
+  transmission.type = "transmission_interface/DifferentialTransmission";
+  transmission.joints = {
+    make_transmission_joint("right_joint", "joint2"),
+    make_transmission_joint("left_joint", "joint1")};
+  transmission.actuators = {
+    make_transmission_actuator("right_motor", "actuator2"),
+    make_transmission_actuator("left_motor", "actuator1")};
+
+  std::vector<hardware_interface::ComponentInfo> joints = {
+    make_joint("left_motor"),
+    make_joint("right_motor"),
+    make_joint("left_joint"),
+    make_joint("right_joint")};
+
+  coupling.configure(transmission, joints);
+
+  std::vector<std::vector<double>> raw_joint_states{{4.0, 2.0}, {2.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}};
+  std::vector<std::vector<double>> hw_joint_states{{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}};
+  coupling.actuator_to_joint(raw_joint_states, hw_joint_states);
+
+  EXPECT_DOUBLE_EQ(hw_joint_states[2][0], 3.0);
+  EXPECT_DOUBLE_EQ(hw_joint_states[3][0], 1.0);
+  EXPECT_DOUBLE_EQ(hw_joint_states[2][1], 1.0);
+  EXPECT_DOUBLE_EQ(hw_joint_states[3][1], 1.0);
+
+  std::vector<std::vector<double>> hw_joint_commands{{0.0, 0.0}, {0.0, 0.0}, {3.0, 1.0}, {1.0, 1.0}};
+  std::vector<std::vector<double>> raw_joint_commands{{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}};
+  coupling.joint_to_actuator(hw_joint_commands, raw_joint_commands);
+
+  EXPECT_DOUBLE_EQ(raw_joint_commands[0][0], 4.0);
+  EXPECT_DOUBLE_EQ(raw_joint_commands[1][0], 2.0);
+  EXPECT_DOUBLE_EQ(raw_joint_commands[0][1], 2.0);
+  EXPECT_DOUBLE_EQ(raw_joint_commands[1][1], 0.0);
+}
+
 TEST(LoaderBackedTransmissionCouplingTest, unsupported_transmission_type_throws)
 {
   ethercat_driver::LoaderBackedTransmissionCoupling coupling;

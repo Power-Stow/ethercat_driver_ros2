@@ -20,6 +20,8 @@ The driver supports mixed setups where some joints use ROS 2 transmissions while
   - `transmission_interface/SimpleTransmission`
   - `transmission_interface/DifferentialTransmission`
 - Transmission mappings are loaded via the ROS 2 transmission loaders (`SimpleTransmissionLoader` and `DifferentialTransmissionLoader`).
+- Multi-DOF transmission roles such as `joint1`, `joint2`, `actuator1`, and `actuator2` define the
+  transmission handle slot order and are honored independently of URDF declaration order.
 - Joints not included in any transmission continue to use direct state/command passthrough.
 
 ### EtherCAT-specific constraint for transmitted joints
