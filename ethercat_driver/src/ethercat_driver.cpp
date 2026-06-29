@@ -19,8 +19,12 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
-#include <string>
+#include <memory>
 #include <regex>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
 #include <limits>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
@@ -43,6 +47,56 @@ void cleanup_master(
 
 namespace ethercat_driver
 {
+
+namespace
+{
+
+uint16_t module_position_from_parameters(const std::unordered_map<std::string, std::string> & module_parameters)
+{
+  return static_cast<uint16_t>(std::stoul(module_parameters.at("position")));
+}
+
+void validate_module_parameter_alignment(
+  const std::vector<std::shared_ptr<ethercat_interface::EcSlave>> & modules,
+  const std::vector<std::unordered_map<std::string, std::string>> & module_parameters)
+{
+  if (modules.size() != module_parameters.size()) {
+    throw std::runtime_error(
+            "EtherCAT module list and module parameter list have different sizes: modules=" +
+            std::to_string(modules.size()) + ", parameters=" + std::to_string(module_parameters.size()));
+  }
+
+  for (auto i = 0ul; i < modules.size(); ++i) {
+    const auto parameter_position = module_position_from_parameters(module_parameters[i]);
+    if (modules[i]->position_ != parameter_position) {
+      throw std::runtime_error(
+              "EtherCAT module position mismatch for module '" + module_parameters[i].at("name") +
+              "': module position=" + std::to_string(modules[i]->position_) +
+              ", parameter position=" + std::to_string(parameter_position));
+    }
+  }
+}
+
+void log_module_mapping(
+  const std::vector<std::shared_ptr<ethercat_interface::EcSlave>> & modules,
+  const std::vector<std::unordered_map<std::string, std::string>> & module_parameters)
+{
+  validate_module_parameter_alignment(modules, module_parameters);
+
+  for (auto i = 0ul; i < modules.size(); ++i) {
+    RCLCPP_INFO(
+      rclcpp::get_logger("EthercatDriver"),
+      "EtherCAT module[%zu]: name=%s alias=%u position=%u vendor_id=0x%x product_id=0x%x",
+      i,
+      module_parameters[i].at("name").c_str(),
+      modules[i]->alias_,
+      modules[i]->position_,
+      modules[i]->vendor_id_,
+      modules[i]->product_id_);
+  }
+}
+
+}  // namespace
 
 unsigned int uint_from_string(const std::string & str)
 {
@@ -285,6 +339,12 @@ CallbackReturn EthercatDriver::on_init(
   }
 
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Got %li modules", ec_modules_.size());
+  try {
+    log_module_mapping(ec_modules_, ec_module_parameters_);
+  } catch (const std::exception & e) {
+    RCLCPP_FATAL(rclcpp::get_logger("EthercatDriver"), "%s", e.what());
+    return CallbackReturn::ERROR;
+  }
 
   // Check if a transfer configuration is provided
   if (info_.hardware_parameters.find("fsoe_config") != info_.hardware_parameters.end() ||
@@ -395,6 +455,13 @@ CallbackReturn EthercatDriver::on_init(
     RCLCPP_INFO(
       rclcpp::get_logger("EthercatDriver"),
       "Transfer configuration loaded successfully!");
+
+    try {
+      log_module_mapping(ec_modules_, ec_module_parameters_);
+    } catch (const std::exception & e) {
+      RCLCPP_FATAL(rclcpp::get_logger("EthercatDriver"), "%s", e.what());
+      return CallbackReturn::ERROR;
+    }
   }
 
   return CallbackReturn::SUCCESS;
@@ -559,19 +626,36 @@ CallbackReturn EthercatDriver::configNetwork()
     master_->addSlave(ec_modules_[i].get());
   }
 
+  try {
+    validate_module_parameter_alignment(ec_modules_, ec_module_parameters_);
+  } catch (const std::exception & e) {
+    RCLCPP_FATAL(rclcpp::get_logger("EthercatDriver"), "%s", e.what());
+    return CallbackReturn::ERROR;
+  }
+
   // configure SDO
   for (auto i = 0ul; i < ec_modules_.size(); i++) {
     for (auto & sdo : ec_modules_[i]->sdo_config) {
       uint32_t abort_code;
+      RCLCPP_INFO(
+        rclcpp::get_logger("EthercatDriver"),
+        "Downloading config SDO for module '%s' at alias %u position %u: index 0x%x subindex 0x%x",
+        ec_module_parameters_[i].at("name").c_str(),
+        ec_modules_[i]->alias_,
+        ec_modules_[i]->position_,
+        sdo.index,
+        sdo.sub_index);
       int ret = master_->configSlaveSdo(
-        std::stod(ec_module_parameters_[i]["position"]),
+        ec_modules_[i]->position_,
         sdo,
         &abort_code);
       if (ret) {
         RCLCPP_INFO(
           rclcpp::get_logger("EthercatDriver"),
-          "Failed to download config SDO for module at position %s with Error: %d",
-          ec_module_parameters_[i]["position"].c_str(),
+          "Failed to download config SDO for module '%s' at alias %u position %u with Error: %d",
+          ec_module_parameters_[i].at("name").c_str(),
+          ec_modules_[i]->alias_,
+          ec_modules_[i]->position_,
           abort_code);
       }
     }
