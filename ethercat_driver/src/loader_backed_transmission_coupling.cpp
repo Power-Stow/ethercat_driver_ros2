@@ -166,6 +166,7 @@ void LoaderBackedTransmissionCoupling::actuator_to_joint(
   }
   for (const auto index : actuator_indices_) {
     actuator_values.push_back(raw_joint_states[index]);
+    hw_joint_states[index] = raw_joint_states[index];
   }
 
   std::vector<transmission_interface::JointHandle> joint_handles;
