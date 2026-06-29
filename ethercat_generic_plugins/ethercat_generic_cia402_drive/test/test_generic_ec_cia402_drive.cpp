@@ -322,3 +322,59 @@ TEST_F(EcCiA402DriveTest, EcWriteDefaultTargetPosition)
   plugin_->processData(0, domain_address);
   ASSERT_EQ(EC_READ_S32(domain_address), 654321);
 }
+
+TEST_F(EcCiA402DriveTest, JointOffsetAppliesToTpdoAndDefaultRpdoPosition)
+{
+  std::unordered_map<std::string, std::string> slave_parameters;
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {
+    std::numeric_limits<double>::quiet_NaN(),
+    std::numeric_limits<double>::quiet_NaN()};
+  slave_parameters["state_interface/position"] = "0";
+  slave_parameters["command_interface/mode_of_operation"] = "1";
+  slave_parameters["joint_offset"] = "2.5";
+  plugin_->parameters_ = slave_parameters;
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->joint_offset_ = 2.5;
+  plugin_->is_operational_ = true;
+  plugin_->mode_of_operation_display_ = 8;
+
+  uint8_t domain_address[4];
+  EC_WRITE_S32(domain_address, 100);
+  plugin_->processData(6, domain_address);
+
+  ASSERT_EQ(plugin_->last_position_, 102.5);
+  ASSERT_EQ(plugin_->state_interface_ptr_->at(0), 102.5);
+
+  EC_WRITE_S32(domain_address, 0);
+  plugin_->processData(0, domain_address);
+  ASSERT_EQ(EC_READ_S32(domain_address), 100);
+}
+
+TEST_F(EcCiA402DriveTest, JointOffsetCompensatesCspCommandPosition)
+{
+  std::unordered_map<std::string, std::string> slave_parameters;
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {42.5, std::numeric_limits<double>::quiet_NaN()};
+  slave_parameters["state_interface/position"] = "0";
+  slave_parameters["command_interface/position"] = "0";
+  slave_parameters["command_interface/mode_of_operation"] = "1";
+  slave_parameters["joint_offset"] = "2.5";
+  plugin_->parameters_ = slave_parameters;
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->joint_offset_ = 2.5;
+  plugin_->is_operational_ = true;
+  plugin_->mode_of_operation_display_ = 8;
+
+  uint8_t domain_address[4];
+  EC_WRITE_S32(domain_address, 0);
+  plugin_->processData(0, domain_address);
+
+  ASSERT_EQ(EC_READ_S32(domain_address), 40);
+}

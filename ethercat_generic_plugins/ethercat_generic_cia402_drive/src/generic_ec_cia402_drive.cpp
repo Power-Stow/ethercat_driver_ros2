@@ -242,10 +242,22 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
   if (channel.index == CiA402D_RPDO_POSITION) {
     if (mode_of_operation_display_ != ModeOfOperation::MODE_NO_MODE) {
       channel.default_value =
-        channel.factor * last_position_ + channel.offset;
+        channel.factor * (last_position_ - joint_offset_) + channel.offset;
     }
     channel.override_command =
       (mode_of_operation_display_ != ModeOfOperation::MODE_CYCLIC_SYNC_POSITION) ? true : false;
+
+    if (mode_of_operation_display_ == ModeOfOperation::MODE_CYCLIC_SYNC_POSITION &&
+      command_interface_ptr_ != nullptr &&
+      channel.has_command_interface_name() &&
+      channel.is_command_interface_defined() &&
+      channel.command_interface_index(0) < command_interface_ptr_->size())
+    {
+      const double command_position = command_interface_ptr_->at(channel.command_interface_index(0));
+      channel.ec_read_to_interface(domain_address);
+      channel.ec_write(domain_address, command_position - joint_offset_);
+      return;
+    }
   }
 
   // setup mode of operation
@@ -263,7 +275,14 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
   }
 
   if (channel.index == CiA402D_TPDO_POSITION) {
-    last_position_ = channel.last_value;
+    last_position_ = channel.last_value + joint_offset_;
+    if (state_interface_ptr_ != nullptr &&
+      channel.has_state_interface_name() &&
+      channel.is_state_interface_defined() &&
+      channel.state_interface_index(0) < state_interface_ptr_->size())
+    {
+      state_interface_ptr_->at(channel.state_interface_index(0)) = last_position_;
+    }
   }
 
   // Special case: StatusWord
@@ -302,6 +321,10 @@ bool EcCiA402Drive::setupSlave(
 
   if (parameters_.find("mode_of_operation") != parameters_.end()) {
     mode_of_operation_ = std::stod(parameters_["mode_of_operation"]);
+  }
+
+  if (parameters_.find("joint_offset") != parameters_.end()) {
+    joint_offset_ = std::stod(parameters_["joint_offset"]);
   }
 
   if (parameters_.find("command_interface/reset_fault") != parameters_.end()) {
