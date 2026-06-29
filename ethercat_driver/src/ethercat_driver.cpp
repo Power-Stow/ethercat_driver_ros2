@@ -805,7 +805,6 @@ CallbackReturn EthercatDriver::on_error(
   RCLCPP_ERROR(rclcpp::get_logger("EthercatDriver"), "Error cleanup ...please wait...");
 
   cleanup_master(master_, activated_);
-  cleanupPluginsForShutdown();
 
   RCLCPP_ERROR(rclcpp::get_logger("EthercatDriver"), "Error cleanup complete.");
 

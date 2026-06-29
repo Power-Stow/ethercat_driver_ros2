@@ -16,11 +16,13 @@
 
 #include "ethercat_driver/loader_backed_transmission_coupling.hpp"
 
+#include <hardware_interface/hardware_info.hpp>
+#include <hardware_interface/types/hardware_interface_type_values.hpp>
+
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
-
-#include "hardware_interface/types/hardware_interface_type_values.hpp"
 
 namespace
 {
@@ -91,6 +93,38 @@ TEST(LoaderBackedTransmissionCouplingTest, simple_transmission_maps_state_and_co
   coupling.joint_to_actuator(hw_joint_commands, raw_joint_commands);
   EXPECT_DOUBLE_EQ(raw_joint_commands[0][0], 1.2);
   EXPECT_DOUBLE_EQ(raw_joint_commands[0][1], 0.4);
+}
+
+TEST(LoaderBackedTransmissionCouplingTest, simple_transmission_preserves_auxiliary_actuator_commands)
+{
+  ethercat_driver::LoaderBackedTransmissionCoupling coupling;
+  hardware_interface::TransmissionInfo transmission;
+  transmission.name = "simple";
+  transmission.type = "transmission_interface/SimpleTransmission";
+  transmission.joints = {make_transmission_joint("wheel_joint")};
+  transmission.actuators = {make_transmission_actuator("wheel_motor")};
+
+  hardware_interface::InterfaceInfo reset_fault;
+  reset_fault.name = "reset_fault";
+
+  auto motor = make_joint("wheel_motor");
+  motor.command_interfaces.push_back(reset_fault);
+
+  std::vector<hardware_interface::ComponentInfo> joints = {motor, make_joint("wheel_joint")};
+
+  coupling.configure(transmission, joints);
+
+  std::vector<std::vector<double>> hw_joint_commands{{0.0, 0.0, 1.0}, {1.2, 0.4}};
+  std::vector<std::vector<double>> raw_joint_commands{
+    {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(),
+      std::numeric_limits<double>::quiet_NaN()},
+    {0.0, 0.0}};
+
+  coupling.joint_to_actuator(hw_joint_commands, raw_joint_commands);
+
+  EXPECT_DOUBLE_EQ(raw_joint_commands[0][0], 1.2);
+  EXPECT_DOUBLE_EQ(raw_joint_commands[0][1], 0.4);
+  EXPECT_DOUBLE_EQ(raw_joint_commands[0][2], 1.0);
 }
 
 TEST(LoaderBackedTransmissionCouplingTest, differential_transmission_maps_state_and_command)

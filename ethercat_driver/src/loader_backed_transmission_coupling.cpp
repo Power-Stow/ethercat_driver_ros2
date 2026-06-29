@@ -215,7 +215,7 @@ void LoaderBackedTransmissionCoupling::joint_to_actuator(
     joint_values.push_back(hw_joint_commands[index]);
   }
   for (const auto index : actuator_indices_) {
-    actuator_values.push_back(raw_joint_commands[index]);
+    actuator_values.push_back(hw_joint_commands[index]);
   }
 
   std::vector<transmission_interface::JointHandle> joint_handles;

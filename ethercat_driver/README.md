@@ -22,7 +22,12 @@ The driver supports mixed setups where some joints use ROS 2 transmissions while
 - Transmission mappings are loaded via the ROS 2 transmission loaders (`SimpleTransmissionLoader` and `DifferentialTransmissionLoader`).
 - Multi-DOF transmission roles such as `joint1`, `joint2`, `actuator1`, and `actuator2` define the
   transmission handle slot order and are honored independently of URDF declaration order.
+- For transmitted actuator command interfaces, `position`, `velocity`, and `effort` are mapped through the
+  transmission. Other command interfaces, such as `reset_fault`, pass through from exported hardware commands to the
+  raw actuator command buffer used by EtherCAT plugins.
 - Joints not included in any transmission continue to use direct state/command passthrough.
+- Lifecycle error recovery keeps configured EtherCAT module/plugin instances so a recovered activation can reconfigure
+  the master with the same slave set.
 
 ### EtherCAT-specific constraint for transmitted joints
 
