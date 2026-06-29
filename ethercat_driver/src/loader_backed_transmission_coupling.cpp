@@ -14,13 +14,16 @@
 
 #include "ethercat_driver/loader_backed_transmission_coupling.hpp"
 
-#include "hardware_interface/types/hardware_interface_type_values.hpp"
-#include "transmission_interface/differential_transmission_loader.hpp"
-#include "transmission_interface/exception.hpp"
-#include "transmission_interface/simple_transmission_loader.hpp"
-#include "transmission_interface/transmission.hpp"
+#include <hardware_interface/hardware_info.hpp>
+#include <hardware_interface/types/hardware_interface_type_values.hpp>
+#include <transmission_interface/differential_transmission_loader.hpp>
+#include <transmission_interface/exception.hpp>
+#include <transmission_interface/handle.hpp>
+#include <transmission_interface/simple_transmission_loader.hpp>
 
 #include <algorithm>
+#include <cstddef>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <string>

@@ -15,13 +15,15 @@
 #ifndef ETHERCAT_DRIVER__LOADER_BACKED_TRANSMISSION_COUPLING_HPP_
 #define ETHERCAT_DRIVER__LOADER_BACKED_TRANSMISSION_COUPLING_HPP_
 
+#include <ethercat_driver/transmission_coupling_base.hpp>
+#include <hardware_interface/hardware_info.hpp>
+#include <transmission_interface/handle.hpp>
+
 #include <cstddef>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "ethercat_driver/transmission_coupling_base.hpp"
-#include "transmission_interface/handle.hpp"
 
 namespace transmission_interface
 {
