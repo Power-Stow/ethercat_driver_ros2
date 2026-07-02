@@ -14,6 +14,10 @@
 //
 // Author: Maciej Bednarczyk (macbednarczyk@gmail.com)
 
+#include "ethercat_generic_plugins/generic_ec_cia402_drive.hpp"
+
+#include <rclcpp/rclcpp.hpp>
+
 #include <numeric>
 #include <algorithm>
 #include <array>
@@ -21,8 +25,6 @@
 #include <filesystem>
 #include <sstream>
 
-#include "ethercat_generic_plugins/generic_ec_cia402_drive.hpp"
-#include "rclcpp/rclcpp.hpp"
 
 namespace ethercat_generic_plugins
 {
@@ -312,24 +314,65 @@ bool EcCiA402Drive::setupSlave(
       return false;
     }
   } else {
-    std::cerr << "EcCiA402Drive: failed to find 'slave_config' tag in URDF." << std::endl;
+      RCLCPP_ERROR(
+          rclcpp::get_logger("EthercatDriver"),
+          "EcCiA402Drive: failed to find 'slave_config' tag in URDF.");
     return false;
   }
 
   setup_interface_mapping();
   setup_syncs();
 
-  if (parameters_.find("mode_of_operation") != parameters_.end()) {
-    mode_of_operation_ = std::stod(parameters_["mode_of_operation"]);
-  }
+if (parameters_.find("mode_of_operation") != parameters_.end()) {
+    const std::string & value = parameters_["mode_of_operation"];
+    try {
+        mode_of_operation_ = std::stod(value);
+    } catch (const std::invalid_argument &) {
+        RCLCPP_ERROR(
+            rclcpp::get_logger("EthercatDriver"),
+            "EcCiA402Drive: failed to parse parameter 'mode_of_operation' with value '%s'",
+            value.c_str());
+    } catch (const std::out_of_range &) {
+        RCLCPP_ERROR(
+            rclcpp::get_logger("EthercatDriver"),
+            "EcCiA402Drive: parameter 'mode_of_operation' out of range with value '%s'",
+            value.c_str());
+    }
+}
 
-  if (parameters_.find("joint_offset") != parameters_.end()) {
-    joint_offset_ = std::stod(parameters_["joint_offset"]);
-  }
+if (parameters_.find("joint_offset") != parameters_.end()) {
+    const std::string & value = parameters_["joint_offset"];
+    try {
+        joint_offset_ = std::stod(value);
+    } catch (const std::invalid_argument &) {
+        RCLCPP_ERROR(
+            rclcpp::get_logger("EthercatDriver"),
+            "EcCiA402Drive: failed to parse parameter 'joint_offset' with value '%s'",
+            value.c_str());
+    } catch (const std::out_of_range &) {
+        RCLCPP_ERROR(
+            rclcpp::get_logger("EthercatDriver"),
+            "EcCiA402Drive: parameter 'joint_offset' out of range with value '%s'",
+            value.c_str());
+    }
+}
 
-  if (parameters_.find("command_interface/reset_fault") != parameters_.end()) {
-    fault_reset_command_interface_index_ = std::stoi(parameters_["command_interface/reset_fault"]);
-  }
+if (parameters_.find("command_interface/reset_fault") != parameters_.end()) {
+    const std::string & value = parameters_["command_interface/reset_fault"];
+    try {
+        fault_reset_command_interface_index_ = std::stoi(value);
+    } catch (const std::invalid_argument &) {
+        RCLCPP_ERROR(
+            rclcpp::get_logger("EthercatDriver"),
+            "EcCiA402Drive: failed to parse parameter 'command_interface/reset_fault' with value '%s'",
+            value.c_str());
+    } catch (const std::out_of_range &) {
+        RCLCPP_ERROR(
+            rclcpp::get_logger("EthercatDriver"),
+            "EcCiA402Drive: parameter 'command_interface/reset_fault' out of range with value '%s'",
+            value.c_str());
+    }
+}
 
   setup_csv_dump();
 
