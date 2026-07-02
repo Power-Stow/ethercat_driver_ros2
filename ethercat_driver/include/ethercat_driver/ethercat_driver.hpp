@@ -15,9 +15,10 @@
 #ifndef ETHERCAT_DRIVER__ETHERCAT_DRIVER_HPP_
 #define ETHERCAT_DRIVER__ETHERCAT_DRIVER_HPP_
 
-#include <unordered_map>
+#include <cstddef>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <pluginlib/class_loader.hpp>
 #include "hardware_interface/handle.hpp"
@@ -28,6 +29,7 @@
 #include "rclcpp_lifecycle/node_interfaces/lifecycle_node_interface.hpp"
 #include "rclcpp_lifecycle/state.hpp"
 #include "ethercat_driver/visibility_control.h"
+#include "ethercat_driver/transmission_coupling_base.hpp"
 #include "ethercat_interface/ec_slave.hpp"
 #include "ethercat_interface/ec_master.hpp"
 #include "yaml-cpp/yaml.h"
@@ -62,6 +64,12 @@ public:
   CallbackReturn on_deactivate(const rclcpp_lifecycle::State & previous_state) override;
 
   ETHERCAT_DRIVER_PUBLIC
+  CallbackReturn on_shutdown(const rclcpp_lifecycle::State & previous_state) override;
+
+  ETHERCAT_DRIVER_PUBLIC
+  CallbackReturn on_error(const rclcpp_lifecycle::State & previous_state) override;
+
+  ETHERCAT_DRIVER_PUBLIC
   hardware_interface::return_type read(const rclcpp::Time &, const rclcpp::Duration &) override;
 
   ETHERCAT_DRIVER_PUBLIC
@@ -72,6 +80,8 @@ protected:
     const std::string & urdf,
     const std::string & component_name,
     const std::string & component_type);
+
+  void configureTransmissions();
 
   uint16_t getAliasOrDefaultAlias(
     const std::unordered_map<std::string,
@@ -107,16 +117,22 @@ protected:
    */
   void configTransferNetwork();
 
+  void cleanupPluginsForShutdown();
+
 protected:
   std::vector<std::shared_ptr<ethercat_interface::EcSlave>> ec_modules_;
   std::vector<std::unordered_map<std::string, std::string>> ec_module_parameters_;
 
   std::vector<std::vector<double>> hw_joint_commands_;
+  std::vector<std::vector<double>> raw_joint_commands_;
   std::vector<std::vector<double>> hw_sensor_commands_;
   std::vector<std::vector<double>> hw_gpio_commands_;
   std::vector<std::vector<double>> hw_joint_states_;
+  std::vector<std::vector<double>> raw_joint_states_;
   std::vector<std::vector<double>> hw_sensor_states_;
   std::vector<std::vector<double>> hw_gpio_states_;
+  std::vector<bool> joint_uses_transmission_;
+  std::vector<std::unique_ptr<TransmissionCouplingBase>> transmissions_;
 
   pluginlib::ClassLoader<ethercat_interface::EcSlave> ec_loader_{
     "ethercat_interface", "ethercat_interface::EcSlave"};

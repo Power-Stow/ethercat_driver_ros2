@@ -13,6 +13,7 @@
   <depend>pluginlib</depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_lifecycle</depend>
+  <depend>transmission_interface</depend>
   <depend>ethercat_interface</depend>
   <depend>yaml_cpp_vendor</depend>
   <depend>yaml-cpp</depend>

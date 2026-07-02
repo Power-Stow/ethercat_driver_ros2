@@ -86,8 +86,8 @@ struct InterfaceData
   uint8_t mask = 255;
   double default_value = std::numeric_limits<double>::quiet_NaN();
   /** last_value stores either:
-   * - the last read value modified by mask, factor and offset
-   * - the last written value modified by mask, factor and offset
+   * - for RxPDO (from PC to Device) the last written value converted to raw space (i.e. modified by mask, factor and offset to convert to raw)
+   * - for TxPDO (from Device to PC) the last read value converted to physical space (i.e. modified by mask, factor and offset to convert to physical)
    * */
   double last_value = std::numeric_limits<double>::quiet_NaN();
   double factor = 1;
@@ -192,7 +192,7 @@ public:
   std::string sub_index_hex_str() const
   {
     std::stringstream ss;
-    ss << "0x" << std::hex << sub_index;
+    ss << "0x" << std::hex << +sub_index;
     return ss.str();
   }
 

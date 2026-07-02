@@ -45,6 +45,8 @@ public:
 public:
   /** read or write data to the domain from the index of the entry in the recorded pdos */
   virtual void processData(size_t /*entry_idx*/, uint8_t * /*domain_address*/) {}
+  virtual void set_process_phase(const std::string & phase) {current_process_phase_ = phase;}
+  virtual const std::string & process_phase() const {return current_process_phase_;}
   /** a pointer to syncs. return &syncs[0] */
   virtual const ec_sync_info_t * syncs() {return NULL;}
   virtual bool initialized() {return true;}
@@ -86,8 +88,8 @@ public:
   }
 
 public:
-  uint16_t alias_;        //< Slave alias.
-  uint16_t position_;     //< Index after alias. If alias is zero, stores the ring position.
+  uint16_t alias_{0};        //< Slave alias.
+  uint16_t position_{0};     //< Index after alias. If alias is zero, stores the ring position.
   uint32_t vendor_id_;   //< Slave vendor ID.
   uint32_t product_id_;  //< Slave product code.
 
@@ -97,6 +99,7 @@ protected:
   std::vector<double> * state_interface_ptr_;
   std::vector<double> * command_interface_ptr_;
   std::unordered_map<std::string, std::string> parameters_;
+  std::string current_process_phase_ = "unknown";
   bool is_operational_ = false;
   bool is_alias_and_position_set_ = false;
 };

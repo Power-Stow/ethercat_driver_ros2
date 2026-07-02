@@ -13,16 +13,90 @@
 // limitations under the License.
 
 #include "ethercat_driver/ethercat_driver.hpp"
+#include "ethercat_driver/loader_backed_transmission_coupling.hpp"
 
 #include <tinyxml2.h>
-#include <string>
+
+#include <algorithm>
+#include <cstdint>
+#include <limits>
+#include <memory>
 #include <regex>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/rclcpp.hpp"
 
+namespace
+{
+void cleanup_master(
+  std::shared_ptr<ethercat_interface::EcMaster> & master,
+  bool & activated)
+{
+  activated = false;
+
+  if (master) {
+    master->shutdown();
+    master.reset();
+  }
+}
+}  // namespace
+
 namespace ethercat_driver
 {
+
+namespace
+{
+
+uint16_t module_position_from_parameters(const std::unordered_map<std::string, std::string> & module_parameters)
+{
+  return static_cast<uint16_t>(std::stoul(module_parameters.at("position")));
+}
+
+void validate_module_parameter_alignment(
+  const std::vector<std::shared_ptr<ethercat_interface::EcSlave>> & modules,
+  const std::vector<std::unordered_map<std::string, std::string>> & module_parameters)
+{
+  if (modules.size() != module_parameters.size()) {
+    throw std::runtime_error(
+            "EtherCAT module list and module parameter list have different sizes: modules=" +
+            std::to_string(modules.size()) + ", parameters=" + std::to_string(module_parameters.size()));
+  }
+
+  for (auto i = 0ul; i < modules.size(); ++i) {
+    const auto parameter_position = module_position_from_parameters(module_parameters[i]);
+    if (modules[i]->position_ != parameter_position) {
+      throw std::runtime_error(
+              "EtherCAT module position mismatch for module '" + module_parameters[i].at("name") +
+              "': module position=" + std::to_string(modules[i]->position_) +
+              ", parameter position=" + std::to_string(parameter_position));
+    }
+  }
+}
+
+void log_module_mapping(
+  const std::vector<std::shared_ptr<ethercat_interface::EcSlave>> & modules,
+  const std::vector<std::unordered_map<std::string, std::string>> & module_parameters)
+{
+  validate_module_parameter_alignment(modules, module_parameters);
+
+  for (auto i = 0ul; i < modules.size(); ++i) {
+    RCLCPP_INFO(
+      rclcpp::get_logger("EthercatDriver"),
+      "EtherCAT module[%zu]: name=%s alias=%u position=%u vendor_id=0x%x product_id=0x%x",
+      i,
+      module_parameters[i].at("name").c_str(),
+      modules[i]->alias_,
+      modules[i]->position_,
+      modules[i]->vendor_id_,
+      modules[i]->product_id_);
+  }
+}
+
+}  // namespace
 
 unsigned int uint_from_string(const std::string & str)
 {
@@ -105,6 +179,7 @@ CallbackReturn EthercatDriver::on_init(
       info_.joints[j].state_interfaces.size(),
       std::numeric_limits<double>::quiet_NaN());
   }
+  raw_joint_states_ = hw_joint_states_;
   hw_sensor_states_.resize(info_.sensors.size());
   for (uint s = 0; s < info_.sensors.size(); s++) {
     hw_sensor_states_[s].resize(
@@ -125,6 +200,7 @@ CallbackReturn EthercatDriver::on_init(
       info_.joints[j].command_interfaces.size(),
       std::numeric_limits<double>::quiet_NaN());
   }
+  raw_joint_commands_ = hw_joint_commands_;
   hw_sensor_commands_.resize(info_.sensors.size());
   for (uint s = 0; s < info_.sensors.size(); s++) {
     hw_sensor_commands_[s].resize(
@@ -137,6 +213,9 @@ CallbackReturn EthercatDriver::on_init(
       info_.gpios[g].command_interfaces.size(),
       std::numeric_limits<double>::quiet_NaN());
   }
+
+  joint_uses_transmission_.assign(info_.joints.size(), false);
+  configureTransmissions();
 
   // Setup slave modules defined per joints in the URDF
   for (uint j = 0; j < info_.joints.size(); j++) {
@@ -156,17 +235,21 @@ CallbackReturn EthercatDriver::on_init(
       }
       try {
         auto module = ec_loader_.createSharedInstance(module_params[i].at("plugin"));
+        module->setAliasAndPosition(
+          getAliasOrDefaultAlias(module_params[i]),
+          std::stoul(module_params[i].at("position")));
+        auto * state_interfaces = joint_uses_transmission_[j] ?
+          &raw_joint_states_[j] : &hw_joint_states_[j];
+        auto * command_interfaces = joint_uses_transmission_[j] ?
+          &raw_joint_commands_[j] : &hw_joint_commands_[j];
         if (!module->setupSlave(
-            module_params[i], &hw_joint_states_[j], &hw_joint_commands_[j]))
+            module_params[i], state_interfaces, command_interfaces))
         {
           RCLCPP_FATAL(
             rclcpp::get_logger("EthercatDriver"),
             "Setup of Joint module %li FAILED.", i + 1);
           return CallbackReturn::ERROR;
         }
-        module->setAliasAndPosition(
-          getAliasOrDefaultAlias(module_params[i]),
-          std::stoul(module_params[i].at("position")));
         ec_modules_.push_back(module);
       } catch (pluginlib::PluginlibException & ex) {
         RCLCPP_FATAL(
@@ -195,6 +278,9 @@ CallbackReturn EthercatDriver::on_init(
       }
       try {
         auto module = ec_loader_.createSharedInstance(module_params[i].at("plugin"));
+        module->setAliasAndPosition(
+          getAliasOrDefaultAlias(module_params[i]),
+          std::stoul(module_params[i].at("position")));
         if (!module->setupSlave(
             module_params[i], &hw_gpio_states_[g], &hw_gpio_commands_[g]))
         {
@@ -203,9 +289,6 @@ CallbackReturn EthercatDriver::on_init(
             "Setup of GPIO module %li FAILED.", i + 1);
           return CallbackReturn::ERROR;
         }
-        module->setAliasAndPosition(
-          getAliasOrDefaultAlias(module_params[i]),
-          std::stoul(module_params[i].at("position")));
         ec_modules_.push_back(module);
       } catch (pluginlib::PluginlibException & ex) {
         RCLCPP_FATAL(
@@ -234,6 +317,9 @@ CallbackReturn EthercatDriver::on_init(
       }
       try {
         auto module = ec_loader_.createSharedInstance(module_params[i].at("plugin"));
+        module->setAliasAndPosition(
+          getAliasOrDefaultAlias(module_params[i]),
+          std::stoul(module_params[i].at("position")));
         if (!module->setupSlave(
             module_params[i], &hw_sensor_states_[s], &hw_sensor_commands_[s]))
         {
@@ -242,9 +328,6 @@ CallbackReturn EthercatDriver::on_init(
             "Setup of Sensor module %li FAILED.", i + 1);
           return CallbackReturn::ERROR;
         }
-        module->setAliasAndPosition(
-          getAliasOrDefaultAlias(module_params[i]),
-          std::stoul(module_params[i].at("position")));
         ec_modules_.push_back(module);
       } catch (pluginlib::PluginlibException & ex) {
         RCLCPP_FATAL(
@@ -256,6 +339,12 @@ CallbackReturn EthercatDriver::on_init(
   }
 
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Got %li modules", ec_modules_.size());
+  try {
+    log_module_mapping(ec_modules_, ec_module_parameters_);
+  } catch (const std::exception & e) {
+    RCLCPP_FATAL(rclcpp::get_logger("EthercatDriver"), "%s", e.what());
+    return CallbackReturn::ERROR;
+  }
 
   // Check if a transfer configuration is provided
   if (info_.hardware_parameters.find("fsoe_config") != info_.hardware_parameters.end() ||
@@ -285,6 +374,9 @@ CallbackReturn EthercatDriver::on_init(
     for (const auto & transfer_module_param : transfer_module_params) {
       try {
         auto ec_module = ec_loader_.createSharedInstance(transfer_module_param.at("plugin"));
+        ec_module->setAliasAndPosition(
+          getAliasOrDefaultAlias(transfer_module_param),
+          std::stoul(transfer_module_param.at("position")));
         if (!ec_module->setupSlave(
             transfer_module_param, &empty_interface_, &empty_interface_))
         {
@@ -296,9 +388,6 @@ CallbackReturn EthercatDriver::on_init(
         }
 
         auto idx = ec_modules_.size();
-        ec_module->setAliasAndPosition(
-          getAliasOrDefaultAlias(transfer_module_param),
-          std::stoul(transfer_module_param.at("position")));
         ec_modules_.push_back(ec_module);
         ec_transfer_slaves_.push_back(idx);
       } catch (const pluginlib::PluginlibException & ex) {
@@ -366,6 +455,13 @@ CallbackReturn EthercatDriver::on_init(
     RCLCPP_INFO(
       rclcpp::get_logger("EthercatDriver"),
       "Transfer configuration loaded successfully!");
+
+    try {
+      log_module_mapping(ec_modules_, ec_module_parameters_);
+    } catch (const std::exception & e) {
+      RCLCPP_FATAL(rclcpp::get_logger("EthercatDriver"), "%s", e.what());
+      return CallbackReturn::ERROR;
+    }
   }
 
   return CallbackReturn::SUCCESS;
@@ -419,7 +515,6 @@ EthercatDriver::export_command_interfaces()
 {
   std::vector<hardware_interface::CommandInterface> command_interfaces;
   // export joint command interface
-  std::vector<double> test;
   for (uint j = 0; j < info_.joints.size(); j++) {
     for (uint i = 0; i < info_.joints[j].command_interfaces.size(); i++) {
       command_interfaces.emplace_back(
@@ -468,6 +563,12 @@ CallbackReturn EthercatDriver::setupMaster()
       return CallbackReturn::ERROR;
     }
   }
+
+  if (master_) {
+    master_->shutdown();
+    master_.reset();
+  }
+
   master_ = std::make_shared<ethercat_interface::EcMaster>(master_id);
 
   if (!master_ || !master_->isValid()) {
@@ -497,27 +598,66 @@ CallbackReturn EthercatDriver::configNetwork()
     }
   }
 
+  int32_t dc_sync0_shift_ns = 0;
+  if (info_.hardware_parameters.find("dc_sync0_shift_ns") != info_.hardware_parameters.end()) {
+    try {
+      const long parsed = std::stol(info_.hardware_parameters["dc_sync0_shift_ns"]);
+      if (parsed < std::numeric_limits<int32_t>::min() ||
+        parsed > std::numeric_limits<int32_t>::max())
+      {
+        RCLCPP_FATAL(
+          rclcpp::get_logger("EthercatDriver"),
+          "Invalid dc_sync0_shift_ns: value exceeds int32_t range");
+        return CallbackReturn::ERROR;
+      }
+      dc_sync0_shift_ns = static_cast<int32_t>(parsed);
+    } catch (std::exception & e) {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"),
+        "Invalid dc_sync0_shift_ns (%s)!", e.what());
+      return CallbackReturn::ERROR;
+    }
+  }
+
   // start EC and wait until state operative
 
   master_->setCtrlFrequency(control_frequency_);
+  master_->setDcSync0Shift(dc_sync0_shift_ns);
 
   for (auto i = 0ul; i < ec_modules_.size(); i++) {
     master_->addSlave(ec_modules_[i].get());
+  }
+
+  try {
+    validate_module_parameter_alignment(ec_modules_, ec_module_parameters_);
+  } catch (const std::exception & e) {
+    RCLCPP_FATAL(rclcpp::get_logger("EthercatDriver"), "%s", e.what());
+    return CallbackReturn::ERROR;
   }
 
   // configure SDO
   for (auto i = 0ul; i < ec_modules_.size(); i++) {
     for (auto & sdo : ec_modules_[i]->sdo_config) {
       uint32_t abort_code;
+      RCLCPP_INFO(
+        rclcpp::get_logger("EthercatDriver"),
+        "Downloading config SDO for module '%s' at alias %u position %u: index 0x%x subindex 0x%x",
+        ec_module_parameters_[i].at("name").c_str(),
+        ec_modules_[i]->alias_,
+        ec_modules_[i]->position_,
+        sdo.index,
+        sdo.sub_index);
       int ret = master_->configSlaveSdo(
-        std::stod(ec_module_parameters_[i]["position"]),
+        ec_modules_[i]->position_,
         sdo,
         &abort_code);
       if (ret) {
         RCLCPP_INFO(
           rclcpp::get_logger("EthercatDriver"),
-          "Failed to download config SDO for module at position %s with Error: %d",
-          ec_module_parameters_[i]["position"].c_str(),
+          "Failed to download config SDO for module '%s' at alias %u position %u with Error: %d",
+          ec_module_parameters_[i].at("name").c_str(),
+          ec_modules_[i]->alias_,
+          ec_modules_[i]->position_,
           abort_code);
       }
     }
@@ -542,6 +682,10 @@ CallbackReturn EthercatDriver::on_activate(
   }
   // configure network
   if (configNetwork() != CallbackReturn::SUCCESS) {
+    if (master_) {
+      master_->shutdown();
+      master_.reset();
+    }
     return CallbackReturn::ERROR;
   }
 
@@ -552,6 +696,10 @@ CallbackReturn EthercatDriver::on_activate(
 
   if (!master_->activate()) {
     RCLCPP_ERROR(rclcpp::get_logger("EthercatDriver"), "Activate EcMaster failed");
+    if (master_) {
+      master_->shutdown();
+      master_.reset();
+    }
     return CallbackReturn::ERROR;
   }
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Activated EcMaster!");
@@ -608,10 +756,7 @@ CallbackReturn EthercatDriver::on_deactivate(
 
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Stopping ...please wait...");
 
-  // stop EC and disconnect
-  if (master_) {
-    master_->stop();
-  }
+  cleanup_master(master_, activated_);
 
   RCLCPP_INFO(
     rclcpp::get_logger("EthercatDriver"), "System successfully stopped!");
@@ -627,8 +772,45 @@ hardware_interface::return_type EthercatDriver::read(
   const std::unique_lock<std::mutex> lock(ec_mutex_, std::try_to_lock);
   if (lock.owns_lock() && activated_) {
     master_->readData();
+    for (auto & transmission : transmissions_) {
+      transmission->actuator_to_joint(raw_joint_states_, hw_joint_states_);
+    }
+  }
+  if (!lock.owns_lock()) {
+    RCLCPP_WARN_THROTTLE(
+      rclcpp::get_logger("EthercatDriver"), *get_clock(), 1000,
+      "Could not acquire lock to read data from EtherCAT master, skipping this cycle.");
   }
   return hardware_interface::return_type::OK;
+}
+
+CallbackReturn EthercatDriver::on_shutdown(
+  const rclcpp_lifecycle::State & /*previous_state*/)
+{
+  const std::lock_guard lock(ec_mutex_);
+
+  RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Shutdown cleanup ...please wait...");
+
+  cleanup_master(master_, activated_);
+  cleanupPluginsForShutdown();
+
+  RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Shutdown cleanup complete.");
+
+  return CallbackReturn::SUCCESS;
+}
+
+CallbackReturn EthercatDriver::on_error(
+  const rclcpp_lifecycle::State & /*previous_state*/)
+{
+  const std::lock_guard lock(ec_mutex_);
+
+  RCLCPP_ERROR(rclcpp::get_logger("EthercatDriver"), "Error cleanup ...please wait...");
+
+  cleanup_master(master_, activated_);
+
+  RCLCPP_ERROR(rclcpp::get_logger("EthercatDriver"), "Error cleanup complete.");
+
+  return CallbackReturn::SUCCESS;
 }
 
 hardware_interface::return_type EthercatDriver::write(
@@ -638,9 +820,34 @@ hardware_interface::return_type EthercatDriver::write(
   // try to lock so we can avoid blocking the read/write loop on the lock.
   const std::unique_lock<std::mutex> lock(ec_mutex_, std::try_to_lock);
   if (lock.owns_lock() && activated_) {
+    for (auto & transmission : transmissions_) {
+      transmission->joint_to_actuator(hw_joint_commands_, raw_joint_commands_);
+    }
     master_->writeData();
   }
+  if (!lock.owns_lock()) {
+    RCLCPP_WARN_THROTTLE(
+      rclcpp::get_logger("EthercatDriver"), *get_clock(), 1000,
+      "Could not acquire lock to write data to EtherCAT master, skipping this cycle.");
+  }
   return hardware_interface::return_type::OK;
+}
+
+void EthercatDriver::configureTransmissions()
+{
+  transmissions_.clear();
+
+  for (const auto & transmission : info_.transmissions) {
+    auto coupling = std::make_unique<LoaderBackedTransmissionCoupling>();
+    coupling->configure(transmission, info_.joints);
+    for (const auto joint_index : coupling->joint_indices()) {
+      joint_uses_transmission_[joint_index] = true;
+    }
+    for (const auto actuator_index : coupling->actuator_indices()) {
+      joint_uses_transmission_[actuator_index] = true;
+    }
+    transmissions_.push_back(std::move(coupling));
+  }
 }
 
 std::vector<std::unordered_map<std::string, std::string>> EthercatDriver::getEcModuleParam(
@@ -880,6 +1087,15 @@ void EthercatDriver::configTransferNetwork()
 {
   // This method can be used for additional transfer network configuration if needed
   // Currently, transfer network configuration is handled in on_activate()
+}
+
+void EthercatDriver::cleanupPluginsForShutdown()
+{
+  ec_modules_.clear();
+  ec_module_parameters_.clear();
+  ec_transfer_nets_.clear();
+  ec_transfer_masters_.clear();
+  ec_transfer_slaves_.clear();
 }
 
 }  // namespace ethercat_driver
