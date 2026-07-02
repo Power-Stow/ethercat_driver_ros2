@@ -18,12 +18,14 @@
 #include <ecrt.h>
 
 #include <time.h>
+
+#include <chrono>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <stdexcept>
 #include <string>
 #include <vector>
-#include <map>
-#include <chrono>
-#include <iostream>
-#include <stdexcept>
 #include "ethercat_interface/ec_slave.hpp"
 #include "ethercat_interface/ec_transfer.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -196,7 +198,7 @@ public:
   }
 
   /** SYNC0 shift in ns. Start with 0, or set this to the value used by your C program. */
-  void setDcSync0Shift(uint32_t shift_time_ns) {dc_sync0_shift_ns_ = shift_time_ns;}
+  void setDcSync0Shift(int32_t shift_time_ns) {dc_sync0_shift_ns_ = shift_time_ns;}
 
   uint32_t getInterval() {return interval_;}
 
@@ -324,7 +326,7 @@ protected:
 
   uint32_t interval_;
 
-  uint32_t dc_sync0_shift_ns_ = 0;
+  int32_t dc_sync0_shift_ns_ = 0;
 
   /** Data transfers (necessary for transfer communication) */
   std::vector<EcTransferInfo> transfers_;

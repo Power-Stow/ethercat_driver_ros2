@@ -16,16 +16,16 @@
 #include "ethercat_driver/loader_backed_transmission_coupling.hpp"
 
 #include <tinyxml2.h>
+
 #include <algorithm>
+#include <cstdint>
 #include <limits>
-#include <stdexcept>
 #include <memory>
 #include <regex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include <limits>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -598,17 +598,19 @@ CallbackReturn EthercatDriver::configNetwork()
     }
   }
 
-  uint32_t dc_sync0_shift_ns = 0;
+  int32_t dc_sync0_shift_ns = 0;
   if (info_.hardware_parameters.find("dc_sync0_shift_ns") != info_.hardware_parameters.end()) {
     try {
-      const unsigned long parsed = std::stoul(info_.hardware_parameters["dc_sync0_shift_ns"]);
-      if (parsed > std::numeric_limits<uint32_t>::max()) {
+      const long parsed = std::stol(info_.hardware_parameters["dc_sync0_shift_ns"]);
+      if (parsed < std::numeric_limits<int32_t>::min() ||
+        parsed > std::numeric_limits<int32_t>::max())
+      {
         RCLCPP_FATAL(
           rclcpp::get_logger("EthercatDriver"),
-          "Invalid dc_sync0_shift_ns: value exceeds uint32_t range");
+          "Invalid dc_sync0_shift_ns: value exceeds int32_t range");
         return CallbackReturn::ERROR;
       }
-      dc_sync0_shift_ns = static_cast<uint32_t>(parsed);
+      dc_sync0_shift_ns = static_cast<int32_t>(parsed);
     } catch (std::exception & e) {
       RCLCPP_FATAL(
         rclcpp::get_logger("EthercatDriver"),
