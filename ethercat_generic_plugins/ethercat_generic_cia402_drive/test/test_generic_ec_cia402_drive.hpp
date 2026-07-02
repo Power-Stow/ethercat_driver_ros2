@@ -37,6 +37,8 @@ class FriendEcCiA402Drive : public ethercat_generic_plugins::EcCiA402Drive
   // FRIEND_TEST(EcCiA402DriveTest, FaultReset);
   FRIEND_TEST(EcCiA402DriveTest, SwitchModeOfOperation);
   FRIEND_TEST(EcCiA402DriveTest, EcWriteDefaultTargetPosition);
+  FRIEND_TEST(EcCiA402DriveTest, JointOffsetAppliesToTpdoAndDefaultRpdoPosition);
+  FRIEND_TEST(EcCiA402DriveTest, JointOffsetCompensatesCspCommandPosition);
 };
 
 class EcCiA402DriveTest : public ::testing::Test

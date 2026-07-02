@@ -14,6 +14,10 @@
 //
 // Author: Maciej Bednarczyk (macbednarczyk@gmail.com)
 
+#include "ethercat_generic_plugins/generic_ec_cia402_drive.hpp"
+
+#include <rclcpp/rclcpp.hpp>
+
 #include <numeric>
 #include <algorithm>
 #include <array>
@@ -21,8 +25,6 @@
 #include <filesystem>
 #include <sstream>
 
-#include "ethercat_generic_plugins/generic_ec_cia402_drive.hpp"
-#include "rclcpp/rclcpp.hpp"
 
 namespace ethercat_generic_plugins
 {
@@ -242,10 +244,22 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
   if (channel.index == CiA402D_RPDO_POSITION) {
     if (mode_of_operation_display_ != ModeOfOperation::MODE_NO_MODE) {
       channel.default_value =
-        channel.factor * last_position_ + channel.offset;
+        channel.factor * (last_position_ - joint_offset_) + channel.offset;
     }
     channel.override_command =
       (mode_of_operation_display_ != ModeOfOperation::MODE_CYCLIC_SYNC_POSITION) ? true : false;
+
+    if (mode_of_operation_display_ == ModeOfOperation::MODE_CYCLIC_SYNC_POSITION &&
+      command_interface_ptr_ != nullptr &&
+      channel.has_command_interface_name() &&
+      channel.is_command_interface_defined() &&
+      channel.command_interface_index(0) < command_interface_ptr_->size())
+    {
+      const double command_position = command_interface_ptr_->at(channel.command_interface_index(0));
+      channel.ec_read_to_interface(domain_address);
+      channel.ec_write(domain_address, command_position - joint_offset_);
+      return;
+    }
   }
 
   // setup mode of operation
@@ -263,7 +277,14 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
   }
 
   if (channel.index == CiA402D_TPDO_POSITION) {
-    last_position_ = channel.last_value;
+    last_position_ = channel.last_value + joint_offset_;
+    if (state_interface_ptr_ != nullptr &&
+      channel.has_state_interface_name() &&
+      channel.is_state_interface_defined() &&
+      channel.state_interface_index(0) < state_interface_ptr_->size())
+    {
+      state_interface_ptr_->at(channel.state_interface_index(0)) = last_position_;
+    }
   }
 
   // Special case: StatusWord
@@ -293,20 +314,65 @@ bool EcCiA402Drive::setupSlave(
       return false;
     }
   } else {
-    std::cerr << "EcCiA402Drive: failed to find 'slave_config' tag in URDF." << std::endl;
+      RCLCPP_ERROR(
+          rclcpp::get_logger("EthercatDriver"),
+          "EcCiA402Drive: failed to find 'slave_config' tag in URDF.");
     return false;
   }
 
   setup_interface_mapping();
   setup_syncs();
 
-  if (parameters_.find("mode_of_operation") != parameters_.end()) {
-    mode_of_operation_ = std::stod(parameters_["mode_of_operation"]);
-  }
+if (parameters_.find("mode_of_operation") != parameters_.end()) {
+    const std::string & value = parameters_["mode_of_operation"];
+    try {
+        mode_of_operation_ = std::stod(value);
+    } catch (const std::invalid_argument &) {
+        RCLCPP_ERROR(
+            rclcpp::get_logger("EthercatDriver"),
+            "EcCiA402Drive: failed to parse parameter 'mode_of_operation' with value '%s'",
+            value.c_str());
+    } catch (const std::out_of_range &) {
+        RCLCPP_ERROR(
+            rclcpp::get_logger("EthercatDriver"),
+            "EcCiA402Drive: parameter 'mode_of_operation' out of range with value '%s'",
+            value.c_str());
+    }
+}
 
-  if (parameters_.find("command_interface/reset_fault") != parameters_.end()) {
-    fault_reset_command_interface_index_ = std::stoi(parameters_["command_interface/reset_fault"]);
-  }
+if (parameters_.find("joint_offset") != parameters_.end()) {
+    const std::string & value = parameters_["joint_offset"];
+    try {
+        joint_offset_ = std::stod(value);
+    } catch (const std::invalid_argument &) {
+        RCLCPP_ERROR(
+            rclcpp::get_logger("EthercatDriver"),
+            "EcCiA402Drive: failed to parse parameter 'joint_offset' with value '%s'",
+            value.c_str());
+    } catch (const std::out_of_range &) {
+        RCLCPP_ERROR(
+            rclcpp::get_logger("EthercatDriver"),
+            "EcCiA402Drive: parameter 'joint_offset' out of range with value '%s'",
+            value.c_str());
+    }
+}
+
+if (parameters_.find("command_interface/reset_fault") != parameters_.end()) {
+    const std::string & value = parameters_["command_interface/reset_fault"];
+    try {
+        fault_reset_command_interface_index_ = std::stoi(value);
+    } catch (const std::invalid_argument &) {
+        RCLCPP_ERROR(
+            rclcpp::get_logger("EthercatDriver"),
+            "EcCiA402Drive: failed to parse parameter 'command_interface/reset_fault' with value '%s'",
+            value.c_str());
+    } catch (const std::out_of_range &) {
+        RCLCPP_ERROR(
+            rclcpp::get_logger("EthercatDriver"),
+            "EcCiA402Drive: parameter 'command_interface/reset_fault' out of range with value '%s'",
+            value.c_str());
+    }
+}
 
   setup_csv_dump();
 
