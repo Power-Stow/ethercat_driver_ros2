@@ -74,6 +74,8 @@ protected:
   bool fault_reset_ = false;
   int fault_reset_command_interface_index_ = -1;
   bool last_fault_reset_command_ = false;
+  bool initialization_position_logged_ = false;
+  double last_raw_position_ = std::numeric_limits<double>::quiet_NaN();
   double joint_offset_ = 0.0;
   double last_position_ = std::numeric_limits<double>::quiet_NaN();
 

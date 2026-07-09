@@ -50,6 +50,16 @@ double raw_value_for_csv(const ethercat_interface::EcPdoChannelManager & channel
   return logged_value;
 }
 
+std::string module_name_for_log(const std::unordered_map<std::string, std::string> & parameters)
+{
+  const auto name_it = parameters.find("name");
+  if (name_it != parameters.end()) {
+    return name_it->second;
+  }
+
+  return "<unknown>";
+}
+
 }  // namespace
 
 EcCiA402Drive::EcCiA402Drive()
@@ -81,6 +91,21 @@ void EcCiA402Drive::updateState()
   last_state_ = state_;
   counter_++;
   initialized_ = is_operational_;
+
+  if (initialized_ && !initialization_position_logged_ && !std::isnan(last_position_) &&
+    !std::isnan(last_raw_position_))
+  {
+    RCLCPP_INFO(
+      rclcpp::get_logger("EthercatDriver"),
+      "EcCiA402Drive initialized: name=%s alias=%u position=%u raw_position=%f converted_position=%f joint_offset=%f",
+      module_name_for_log(parameters_).c_str(),
+      alias_,
+      position_,
+      last_raw_position_,
+      last_position_,
+      joint_offset_);
+    initialization_position_logged_ = true;
+  }
 }
 
 void EcCiA402Drive::setup_csv_dump()
@@ -277,6 +302,7 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
   }
 
   if (channel.index == CiA402D_TPDO_POSITION) {
+    last_raw_position_ = raw_value_for_csv(channel);
     last_position_ = channel.last_value + joint_offset_;
     if (state_interface_ptr_ != nullptr &&
       channel.has_state_interface_name() &&
@@ -308,6 +334,9 @@ bool EcCiA402Drive::setupSlave(
   state_interface_ptr_ = state_interface;
   command_interface_ptr_ = command_interface;
   parameters_ = slave_parameters;
+  initialization_position_logged_ = false;
+  last_raw_position_ = std::numeric_limits<double>::quiet_NaN();
+  last_position_ = std::numeric_limits<double>::quiet_NaN();
 
   if (parameters_.find("slave_config") != parameters_.end()) {
     if (!setup_from_config_file(parameters_["slave_config"])) {

@@ -9,6 +9,19 @@ It maps configured RPDO/TPDO channels to ros2_control interfaces and handles CiA
 
 The plugin supports optional CSV dumping of all assigned PDO channels for each EtherCAT cycle.
 
+## Initialization Position Logging
+
+When a CiA402 drive reaches its initialized / operational state, the plugin now emits a one-time ROS log with:
+
+- configured module name
+- EtherCAT alias and position
+- raw TPDO position value
+- converted exported joint position value
+- configured `joint_offset`
+
+This is intended to help debug mismatches between EtherCAT feedback and ROS joint limits, for example when a drive
+boots with a position outside the URDF-configured joint bounds.
+
 - One CSV row is written per cycle (at the end of `processData()` for the plugin instance).
 - Both RPDO and TPDO channels assigned in the slave config are included.
 - Each row contains a monotonic timestamp (nanoseconds since dump start), cycle counter, phase, then channel values.
