@@ -16,6 +16,7 @@
 
 #include "ethercat_generic_plugins/generic_ec_cia402_drive.hpp"
 
+#include <cmath>
 #include <rclcpp/rclcpp.hpp>
 
 #include <numeric>
@@ -31,6 +32,8 @@ namespace ethercat_generic_plugins
 
 namespace
 {
+
+constexpr double POSITION_WRAP_PERIOD_RAD = 2.0 * M_PI;
 
 double raw_value_for_csv(const ethercat_interface::EcPdoChannelManager & channel)
 {
@@ -58,6 +61,11 @@ std::string module_name_for_log(const std::unordered_map<std::string, std::strin
   }
 
   return "<unknown>";
+}
+
+double wrap_to_pi(const double angle)
+{
+  return std::remainder(angle, POSITION_WRAP_PERIOD_RAD);
 }
 
 }  // namespace
@@ -303,6 +311,11 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
 
   if (channel.index == CiA402D_TPDO_POSITION) {
     last_raw_position_ = raw_value_for_csv(channel);
+    if (joint_offset_startup_wrap_enabled_ && !joint_offset_startup_wrap_applied_) {
+      const double candidate_position = channel.last_value + joint_offset_;
+      joint_offset_ += wrap_to_pi(candidate_position) - candidate_position;
+      joint_offset_startup_wrap_applied_ = true;
+    }
     last_position_ = channel.last_value + joint_offset_;
     if (state_interface_ptr_ != nullptr &&
       channel.has_state_interface_name() &&
@@ -337,6 +350,8 @@ bool EcCiA402Drive::setupSlave(
   initialization_position_logged_ = false;
   last_raw_position_ = std::numeric_limits<double>::quiet_NaN();
   last_position_ = std::numeric_limits<double>::quiet_NaN();
+  joint_offset_startup_wrap_enabled_ = false;
+  joint_offset_startup_wrap_applied_ = false;
 
   if (parameters_.find("slave_config") != parameters_.end()) {
     if (!setup_from_config_file(parameters_["slave_config"])) {
@@ -385,6 +400,11 @@ if (parameters_.find("joint_offset") != parameters_.end()) {
             value.c_str());
     }
 }
+
+  if (parameters_.find("joint_offset_startup_wrap_enabled") != parameters_.end()) {
+    const std::string & value = parameters_["joint_offset_startup_wrap_enabled"];
+    joint_offset_startup_wrap_enabled_ = (value == "true" || value == "1" || value == "True");
+  }
 
 if (parameters_.find("command_interface/reset_fault") != parameters_.end()) {
     const std::string & value = parameters_["command_interface/reset_fault"];

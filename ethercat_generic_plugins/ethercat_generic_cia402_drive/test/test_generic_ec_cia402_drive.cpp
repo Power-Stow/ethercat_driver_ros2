@@ -378,3 +378,56 @@ TEST_F(EcCiA402DriveTest, JointOffsetCompensatesCspCommandPosition)
 
   ASSERT_EQ(EC_READ_S32(domain_address), 40);
 }
+
+TEST_F(EcCiA402DriveTest, JointOffsetStartupWrapDisabledKeepsLegacyBehavior)
+{
+  std::unordered_map<std::string, std::string> slave_parameters;
+  std::vector<double> state_interface = {0.0, 0.0};
+  slave_parameters["state_interface/position"] = "0";
+  slave_parameters["joint_offset"] = "-3.0";
+  plugin_->parameters_ = slave_parameters;
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->joint_offset_ = -3.0;
+
+  uint8_t domain_address[4];
+  EC_WRITE_S32(domain_address, -4);
+  plugin_->processData(6, domain_address);
+
+  EXPECT_NEAR(plugin_->last_position_, -7.0, 1e-9);
+  EXPECT_NEAR(plugin_->state_interface_ptr_->at(0), -7.0, 1e-9);
+  EXPECT_FALSE(plugin_->joint_offset_startup_wrap_applied_);
+  EXPECT_NEAR(plugin_->joint_offset_, -3.0, 1e-9);
+}
+
+TEST_F(EcCiA402DriveTest, JointOffsetStartupWrapEnabledAdjustsFirstSampleOnly)
+{
+  std::unordered_map<std::string, std::string> slave_parameters;
+  std::vector<double> state_interface = {0.0, 0.0};
+  slave_parameters["state_interface/position"] = "0";
+  slave_parameters["joint_offset"] = "-3.0";
+  slave_parameters["joint_offset_startup_wrap_enabled"] = "true";
+  plugin_->parameters_ = slave_parameters;
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->joint_offset_ = -3.0;
+  plugin_->joint_offset_startup_wrap_enabled_ = true;
+
+  uint8_t domain_address[4];
+  EC_WRITE_S32(domain_address, -4);
+  plugin_->processData(6, domain_address);
+
+  EXPECT_TRUE(plugin_->joint_offset_startup_wrap_applied_);
+  EXPECT_NEAR(plugin_->joint_offset_, 3.2831853071795862, 1e-9);
+  EXPECT_NEAR(plugin_->last_position_, -0.7168146928204138, 1e-9);
+  EXPECT_NEAR(plugin_->state_interface_ptr_->at(0), -0.7168146928204138, 1e-9);
+
+  EC_WRITE_S32(domain_address, -3);
+  plugin_->processData(6, domain_address);
+
+  EXPECT_NEAR(plugin_->joint_offset_, 3.2831853071795862, 1e-9);
+  EXPECT_NEAR(plugin_->last_position_, 0.28318530717958623, 1e-9);
+  EXPECT_NEAR(plugin_->state_interface_ptr_->at(0), 0.28318530717958623, 1e-9);
+}

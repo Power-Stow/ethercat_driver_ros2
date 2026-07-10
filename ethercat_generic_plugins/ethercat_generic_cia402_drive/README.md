@@ -5,6 +5,19 @@
 `ethercat_generic_cia402_drive` provides a generic CiA402 EtherCAT slave plugin for `ethercat_driver_ros2`.
 It maps configured RPDO/TPDO channels to ros2_control interfaces and handles CiA402 state transitions.
 
+## Joint Offset Startup Wrap
+
+Some absolute encoders only report their power-up angle within a principal interval such as `[-pi, pi]`, even though
+the joint should remain continuous and multi-turn after initialization. For those joints, the plugin supports an opt-in
+one-time startup wrap adjustment.
+
+When enabled, the first received TPDO position sample is converted using the configured `joint_offset`, wrapped back
+into `[-pi, pi]` with `std::remainder`, and the resulting branch correction is folded into the runtime `joint_offset`.
+All later samples remain unwrapped and continuous.
+
+This helps avoid false ros2_control joint-limit violations at startup when the drive boots on the opposite branch of the
+configured `joint_offset`.
+
 ## CSV PDO Dump (debug)
 
 The plugin supports optional CSV dumping of all assigned PDO channels for each EtherCAT cycle.
@@ -30,11 +43,12 @@ boots with a position outside the URDF-configured joint bounds.
 
 Add these optional `<param>` entries in the corresponding `<ec_module>` block:
 
-| Name                     | Type                    | Default                                                    | Description                              |
-| ------------------------ | ----------------------- | ---------------------------------------------------------- | ---------------------------------------- |
-| `csv_dump_enabled`       | `bool` (`true`/`false`) | `false`                                                    | Enables CSV dump when set to `true`.     |
-| `csv_dump_path`          | `string`                | `logs/log_YYYYMMDD_HHMMSS_cia402_a<alias>_p<position>.csv` | Output CSV file path.                    |
-| `csv_dump_flush_every_n` | `uint`                  | `1`                                                        | Flush the file every N rows (minimum 1). |
+| Name                                | Type                    | Default                                                    | Description                                                                                                                                  |
+| ----------------------------------- | ----------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `joint_offset_startup_wrap_enabled` | `bool` (`true`/`false`) | `false`                                                    | Wrap only the first offset-compensated TPDO position sample into `[-pi, pi]` and fold the branch correction into the runtime `joint_offset`. |
+| `csv_dump_enabled`                  | `bool` (`true`/`false`) | `false`                                                    | Enables CSV dump when set to `true`.                                                                                                         |
+| `csv_dump_path`                     | `string`                | `logs/log_YYYYMMDD_HHMMSS_cia402_a<alias>_p<position>.csv` | Output CSV file path.                                                                                                                        |
+| `csv_dump_flush_every_n`            | `uint`                  | `1`                                                        | Flush the file every N rows (minimum 1).                                                                                                     |
 
 ### CSV columns
 
@@ -54,9 +68,11 @@ Example column names:
 - `rpdo_0x6040_0x0_control_word`
 - `tpdo_0x6041_0x0_status_word`
 
-## Notes
+### Notes
 
 - This feature is intended for debugging and telemetry capture.
+- Keep `joint_offset_startup_wrap_enabled` disabled unless the drive's power-up encoder position is known to wrap into
+  a principal interval and needs one-time branch selection.
 - CSV value semantics:
   - `phase` identifies whether the row was captured during the EtherCAT `read`, `write`, or startup `update` pass.
   - RPDO columns log the raw process-data values written to the drive after applying channel factor/offset scaling.
