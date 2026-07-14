@@ -140,9 +140,6 @@ double CLASSM::ec_read(uint8_t * domain_address, size_t /*i*/)
 {
   last_value = read_function_(domain_address, mask);
   last_value = factor * last_value + offset;
-  if (is_state_interface_defined() ) {
-    state_interface_ptr_->at(state_interface_index_) = last_value;
-  }
   return last_value;
 }
 
