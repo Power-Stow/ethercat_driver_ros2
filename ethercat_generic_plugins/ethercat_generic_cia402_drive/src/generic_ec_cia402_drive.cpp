@@ -302,7 +302,11 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
     }
   }
 
-  channel.ec_update(domain_address);
+  if (channel.index == CiA402D_TPDO_POSITION) {
+    channel.ec_read(domain_address);
+  } else {
+    channel.ec_update(domain_address);
+  }
 
   // get mode_of_operation_display_
   if (channel.index == CiA402D_TPDO_MODE_OF_OPERATION_DISPLAY) {
