@@ -11,9 +11,10 @@ Some absolute encoders only report their power-up angle within a principal inter
 the joint should remain continuous and multi-turn after initialization. For those joints, the plugin supports an opt-in
 one-time startup wrap adjustment.
 
-When enabled, the first received TPDO position sample is converted using the configured `joint_offset`, wrapped back
-into `[-pi, pi]` with `std::remainder`, and the resulting branch correction is folded into the runtime `joint_offset`.
-All later samples remain unwrapped and continuous.
+When enabled, TPDO position export is held back until the drive is operational. The first operational TPDO position
+sample is converted using the configured `joint_offset`, wrapped back into `[-pi, pi]` with `std::remainder`, and the
+resulting branch correction is folded into the runtime `joint_offset`. All later samples remain unwrapped and
+continuous.
 
 This helps avoid false ros2_control joint-limit violations at startup when the drive boots on the opposite branch of the
 configured `joint_offset`.
@@ -45,7 +46,7 @@ Add these optional `<param>` entries in the corresponding `<ec_module>` block:
 
 | Name                                | Type                    | Default                                                    | Description                                                                                                                                  |
 | ----------------------------------- | ----------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `joint_offset_startup_wrap_enabled` | `bool` (`true`/`false`) | `false`                                                    | Wrap only the first offset-compensated TPDO position sample into `[-pi, pi]` and fold the branch correction into the runtime `joint_offset`. |
+| `joint_offset_startup_wrap_enabled` | `bool` (`true`/`false`) | `false`                                                    | After the drive is operational, wrap the first offset-compensated TPDO position sample into `[-pi, pi]` and fold the branch correction into the runtime `joint_offset`. |
 | `csv_dump_enabled`                  | `bool` (`true`/`false`) | `false`                                                    | Enables CSV dump when set to `true`.                                                                                                         |
 | `csv_dump_path`                     | `string`                | `logs/log_YYYYMMDD_HHMMSS_cia402_a<alias>_p<position>.csv` | Output CSV file path.                                                                                                                        |
 | `csv_dump_flush_every_n`            | `uint`                  | `1`                                                        | Flush the file every N rows (minimum 1).                                                                                                     |

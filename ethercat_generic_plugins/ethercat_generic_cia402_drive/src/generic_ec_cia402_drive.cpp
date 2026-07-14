@@ -311,13 +311,32 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
 
   if (channel.index == CiA402D_TPDO_POSITION) {
     last_raw_position_ = raw_value_for_csv(channel);
+    bool update_position_state = true;
     if (joint_offset_startup_wrap_enabled_ && !joint_offset_startup_wrap_applied_) {
-      const double candidate_position = channel.last_value + joint_offset_;
-      joint_offset_ += wrap_to_pi(candidate_position) - candidate_position;
-      joint_offset_startup_wrap_applied_ = true;
+      if (is_operational_) {
+        const double candidate_position = channel.last_value + joint_offset_;
+        RCLCPP_INFO(
+          rclcpp::get_logger("EthercatDriver"),
+          "Joint offset startup wrap enabled for pos=%u. Joint offset before wrapping = %f resulting in candidate position = %f",
+          position_,
+          joint_offset_,
+          candidate_position);
+
+        joint_offset_ += wrap_to_pi(candidate_position) - candidate_position;
+        RCLCPP_INFO(
+          rclcpp::get_logger("EthercatDriver"),
+          "Joint offset after wrapping = %f",
+          joint_offset_);
+
+        joint_offset_startup_wrap_applied_ = true;
+      } else {
+        update_position_state = false;
+      }
     }
-    last_position_ = channel.last_value + joint_offset_;
-    if (state_interface_ptr_ != nullptr &&
+    if (update_position_state) {
+      last_position_ = channel.last_value + joint_offset_;
+    }
+    if (update_position_state && state_interface_ptr_ != nullptr &&
       channel.has_state_interface_name() &&
       channel.is_state_interface_defined() &&
       channel.state_interface_index(0) < state_interface_ptr_->size())
