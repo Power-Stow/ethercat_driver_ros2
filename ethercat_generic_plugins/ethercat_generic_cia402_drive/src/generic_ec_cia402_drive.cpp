@@ -35,7 +35,7 @@ namespace
 
 constexpr double POSITION_WRAP_PERIOD_RAD = 2.0 * M_PI;
 
-double raw_value_for_csv(const ethercat_interface::EcPdoChannelManager & channel)
+double raw_value_from_channel(const ethercat_interface::EcPdoChannelManager & channel)
 {
   const auto & d = channel.data();
   const double logged_value = d.last_value;
@@ -185,7 +185,7 @@ void EcCiA402Drive::setup_csv_dump()
     return;
   }
 
-  csv_dump_file_ << "timestamp_ns,cycle,phase";
+  csv_dump_file_ << "timestamp_ns,cycle,phase,is_operational";
   for (const auto domain_idx : csv_rpdo_domain_indices_) {
     const auto channel_idx = domain_map_[domain_idx];
     const auto * channel = pdo_channels_info_[channel_idx];
@@ -222,16 +222,17 @@ void EcCiA402Drive::dump_cycle_csv_row()
   const auto timestamp_ns =
     std::chrono::duration_cast<std::chrono::nanoseconds>(now - csv_t0_).count();
 
-  csv_dump_file_ << timestamp_ns << "," << csv_cycle_counter_ << "," << process_phase();
+  csv_dump_file_ << timestamp_ns << "," << csv_cycle_counter_ << "," << process_phase() << ","
+                 << is_operational_;
   for (const auto domain_idx : csv_rpdo_domain_indices_) {
     const auto channel_idx = domain_map_[domain_idx];
     const auto * channel = pdo_channels_info_[channel_idx];
-    csv_dump_file_ << "," << raw_value_for_csv(*channel);
+    csv_dump_file_ << "," << raw_value_from_channel(*channel);
   }
   for (const auto domain_idx : csv_tpdo_domain_indices_) {
     const auto channel_idx = domain_map_[domain_idx];
     const auto * channel = pdo_channels_info_[channel_idx];
-    csv_dump_file_ << "," << raw_value_for_csv(*channel);
+    csv_dump_file_ << "," << raw_value_from_channel(*channel);
   }
   csv_dump_file_ << "\n";
   ++csv_cycle_counter_;
@@ -282,16 +283,26 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
     channel.override_command =
       (mode_of_operation_display_ != ModeOfOperation::MODE_CYCLIC_SYNC_POSITION) ? true : false;
 
-    if (mode_of_operation_display_ == ModeOfOperation::MODE_CYCLIC_SYNC_POSITION &&
-      command_interface_ptr_ != nullptr &&
-      channel.has_command_interface_name() &&
-      channel.is_command_interface_defined() &&
-      channel.command_interface_index(0) < command_interface_ptr_->size())
-    {
-      const double command_position = command_interface_ptr_->at(channel.command_interface_index(0));
+    if (mode_of_operation_display_ == ModeOfOperation::MODE_CYCLIC_SYNC_POSITION) {
       channel.ec_read_to_interface(domain_address);
-      channel.ec_write(domain_address, command_position - joint_offset_);
-      return;
+
+      if (joint_offset_startup_wrap_enabled_ && !joint_offset_startup_wrap_applied_) {
+        // Fallback to default value (last read position) while waiting for joint offset to be computed and applied
+        channel.ec_write(domain_address, std::numeric_limits<double>::quiet_NaN());
+        return;
+      }
+
+      if (command_interface_ptr_ != nullptr &&
+          channel.has_command_interface_name() &&
+          channel.is_command_interface_defined() &&
+          channel.command_interface_index(0) < command_interface_ptr_->size())
+      {
+        // These lines mimic the behavior of channel.ec_update() but apply the joint offset to the command position
+        // before writing it to the PDO
+        const double command_position = command_interface_ptr_->at(channel.command_interface_index(0));
+        channel.ec_write(domain_address, command_position - joint_offset_);
+        return;
+      }
     }
   }
 
@@ -303,6 +314,8 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
   }
 
   if (channel.index == CiA402D_TPDO_POSITION) {
+    // For position feedback, we need to read the value from the device and apply the joint offset and not just update
+    // the interfaces directly with the read value
     channel.ec_read(domain_address);
   } else {
     channel.ec_update(domain_address);
@@ -314,11 +327,12 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
   }
 
   if (channel.index == CiA402D_TPDO_POSITION) {
-    last_raw_position_ = raw_value_for_csv(channel);
+    last_raw_position_ = raw_value_from_channel(channel);
     bool update_position_state = true;
     if (joint_offset_startup_wrap_enabled_ && !joint_offset_startup_wrap_applied_) {
-      if (is_operational_) {
+      if (!std::isnan(channel.last_value) && channel.last_value != 0) { // ToDo: Be aware of the cases where a motor genuinely starts at 0 position, in which case the joint offset wrapping handling will not work.
         const double candidate_position = channel.last_value + joint_offset_;
+
         RCLCPP_INFO(
           rclcpp::get_logger("EthercatDriver"),
           "Joint offset startup wrap enabled for pos=%u. Joint offset before wrapping = %f resulting in candidate position = %f",
@@ -327,6 +341,7 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
           candidate_position);
 
         joint_offset_ += wrap_to_pi(candidate_position) - candidate_position;
+
         RCLCPP_INFO(
           rclcpp::get_logger("EthercatDriver"),
           "Joint offset after wrapping = %f",
@@ -339,13 +354,14 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
     }
     if (update_position_state) {
       last_position_ = channel.last_value + joint_offset_;
-    }
-    if (update_position_state && state_interface_ptr_ != nullptr &&
-      channel.has_state_interface_name() &&
-      channel.is_state_interface_defined() &&
-      channel.state_interface_index(0) < state_interface_ptr_->size())
-    {
-      state_interface_ptr_->at(channel.state_interface_index(0)) = last_position_;
+
+      if (state_interface_ptr_ != nullptr &&
+          channel.has_state_interface_name() &&
+          channel.is_state_interface_defined() &&
+          channel.state_interface_index(0) < state_interface_ptr_->size())
+      {
+        state_interface_ptr_->at(channel.state_interface_index(0)) = last_position_;
+      }
     }
   }
 
