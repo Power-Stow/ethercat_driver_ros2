@@ -184,7 +184,7 @@ protected:
   // --- Health diagnostics (opt-in via the "publish_diagnostics" hardware parameter) ---
   bool publish_diagnostics_ = false;
   double diagnostics_period_s_ = 1.0;
-  int32_t dc_time_diff_warn__ns_ = 1000;
+  int32_t dc_time_diff_warn__ns_ = 10000; // 10 us
 
   rclcpp::Node::SharedPtr diagnostics_node_;
   std::unique_ptr<diagnostic_updater::Updater> diagnostics_updater_;

@@ -366,13 +366,12 @@ void EcMaster::update(uint32_t domain)
   }
 
   // refresh the health snapshot (cheap; no-op unless diagnostics are enabled)
-  if (diagnostics_enabled_) {
-    if (update_counter_ % reg_read_frequency_ == 0) {
-      serviceRegisterRequests();
-    }
-    if (update_counter_ % check_state_frequency_ == 0) {
-      updateDiagnosticsSnapshot(domain);
-    }
+  if (diagnostics_enabled_ && update_counter_ % check_state_frequency_ == 0) {
+    // Register requests self-pace via their own BUSY state, so servicing them at the snapshot
+    // cadence (rather than a slow fixed gate) keeps register-derived values, such as the DC
+    // system-time difference, refreshing promptly instead of lagging by hundreds of cycles.
+    serviceRegisterRequests();
+    updateDiagnosticsSnapshot(domain);
   }
 
   // read and write process data
@@ -422,13 +421,12 @@ void EcMaster::readData(uint32_t domain)
   }
 
   // refresh the health snapshot (cheap; no-op unless diagnostics are enabled)
-  if (diagnostics_enabled_) {
-    if (update_counter_ % reg_read_frequency_ == 0) {
-      serviceRegisterRequests();
-    }
-    if (update_counter_ % check_state_frequency_ == 0) {
-      updateDiagnosticsSnapshot(domain);
-    }
+  if (diagnostics_enabled_ && update_counter_ % check_state_frequency_ == 0) {
+    // Register requests self-pace via their own BUSY state, so servicing them at the snapshot
+    // cadence (rather than a slow fixed gate) keeps register-derived values, such as the DC
+    // system-time difference, refreshing promptly instead of lagging by hundreds of cycles.
+    serviceRegisterRequests();
+    updateDiagnosticsSnapshot(domain);
   }
 
   // read and write process data
