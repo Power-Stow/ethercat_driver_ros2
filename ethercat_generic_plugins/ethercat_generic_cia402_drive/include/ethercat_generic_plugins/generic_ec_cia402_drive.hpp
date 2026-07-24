@@ -20,6 +20,7 @@
 #include <chrono>
 #include <fstream>
 #include <cstdint>
+#include <optional>
 #include <vector>
 #include <string>
 #include <unordered_map>
@@ -44,6 +45,8 @@ public:
   bool initialized();
 
   virtual void processData(size_t entry_idx, uint8_t * domain_address);
+
+  std::optional<ethercat_interface::Cia402Diagnostics> cia402Diagnostics() override;
 
   virtual bool setupSlave(
     std::unordered_map<std::string, std::string> slave_parameters,

@@ -17,12 +17,14 @@
 
 #include <ecrt.h>
 #include <map>
+#include <optional>
 #include <vector>
 #include <unordered_map>
 #include <iostream>
 #include <cmath>
 #include <string>
 
+#include "ethercat_interface/ec_diagnostics.hpp"
 #include "ethercat_interface/ec_sdo_manager.hpp"
 
 namespace ethercat_interface
@@ -64,6 +66,9 @@ public:
    *  again. The driver calls this on every activation, because the same slave instances are
    *  reused across a deactivate/activate cycle. */
   virtual void reset_wind_down() {}
+  /** CiA 402 device-state summary for health monitoring, if this slave is a drive.
+   *  Called from the cyclic thread; default has no drive semantics. */
+  virtual std::optional<Cia402Diagnostics> cia402Diagnostics() {return std::nullopt;}
   /** Assign activate DC synchronization. return activate word*/
   virtual int assign_activate_dc_sync() {return 0x00;}
   /** number of elements in the syncs array. */

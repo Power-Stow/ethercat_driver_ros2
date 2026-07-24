@@ -45,6 +45,28 @@ Set on the `<hardware>` element of the `ros2_control` system.
 `shutdown_wind_down_timeout_s` — budget in seconds for the shutdown wind-down loop (default `1.0`); `<= 0` skips the wind-down.
 `activation_timeout_s` — budget in seconds for the activation/bring-up loop (default `10.0`); `<= 0` waits indefinitely, and a positive value must exceed the loop's one second initial delay. Time the master spends re-scanning the bus does not count, up to 30 s of it.
 `require_startup_sdo` — refuse the activation when a startup config SDO download fails (default `false`, which brings the bus up anyway).
+`publish_diagnostics` — enable EtherCAT health diagnostics on `/diagnostics` (default `false`).
+`diagnostics_period_s` — diagnostics publish period in seconds (default `1.0`).
+`dc_time_diff_warn_ns` — per-slave DC system-time-difference magnitude above which a `WARN` is raised (default `1000`).
+
+### Health diagnostics
+
+When `publish_diagnostics` is `true`, the driver publishes `diagnostic_msgs/DiagnosticArray` on
+`/diagnostics` from a dedicated non-real-time node (`ethercat_diagnostics`), leaving the cyclic
+`SCHED_FIFO` loop untouched apart from cheap state snapshotting. It integrates with
+`rqt_runtime_monitor` and `diagnostic_aggregator`.
+
+Published `DiagnosticStatus` entries:
+
+- **EtherCAT Master** — `slaves_responding`, `link_up`, master `al_states`, domain working counter and `wc_state` (ZERO/INCOMPLETE/COMPLETE), and a cumulative incomplete-cycle count used as a lost-frame proxy.
+- **EtherCAT Slave: `<name>`** (one per slave) — AL state (INIT/PREOP/SAFEOP/OP), `online`/`operational`, AL status code (ESC register `0x0134`), DC system-time difference (`0x092C`), DC propagation delay (`0x0928`), and CiA 402 device state for drive slaves.
+- **EtherCAT RT Timing** — cyclic-loop period min/mean/max, max jitter, and deadline-overrun count.
+
+Levels: link down or a slave offline/not-operational or a drive fault → `ERROR`; incomplete working
+counter, high DC clock drift, or loop overruns → `WARN`.
+
+The IgH realtime API does not expose Tx-error / lost-frame counters directly, so the master status
+reports the working-counter-derived incomplete-cycle count as a lost-frame proxy.
 
 ### Real-time activation loop
 
@@ -197,6 +219,7 @@ ethercat_driver/
 - `transmission_interface`: transmission loaders and runtime mapping primitives.
 - `ethercat_interface`: EtherCAT master/slave abstraction layer.
 - `pluginlib`, `rclcpp`, `rclcpp_lifecycle`: plugin and lifecycle integration.
+- `diagnostic_updater`, `diagnostic_msgs`: EtherCAT health diagnostics publishing.
 
 ### Build/Test Dependencies
 
