@@ -1049,7 +1049,7 @@ void EthercatDriver::parseDiagnosticsParameters()
     }
   }
 
-  dc_time_diff_warn__ns_ = 1000;
+  dc_time_diff_warn__ns_ = 10000; // 10 us
   it = info_.hardware_parameters.find("dc_time_diff_warn_ns");
   if (it != info_.hardware_parameters.end()) {
     try {

@@ -359,9 +359,6 @@ protected:
   /** whether health-diagnostics collection is active (set before activate()) */
   bool diagnostics_enabled_ = false;
 
-  /** ESC register requests are serviced every this many control loops */
-  uint32_t reg_read_frequency_ = 1000;
-
   /** cumulative cycles with an incomplete domain working counter (lost-frame proxy) */
   std::atomic<uint64_t> incomplete_cycle_count_{0};
 
