@@ -377,9 +377,6 @@ double CLASSM::ec_read(uint8_t * domain_address, size_t i)
   InterfaceDataWithAddrOffset & d = v_data[i];
   double last_value = read_functions_[i](domain_address + d.addr_offset, d.mask);
   last_value = d.factor * last_value + d.offset;
-  if (is_state_interface_defined(i) ) {
-    state_interface_ptr_->at(interface_ids_[i]) = last_value;
-  }
   d.last_value = last_value;
   return last_value;
 }
