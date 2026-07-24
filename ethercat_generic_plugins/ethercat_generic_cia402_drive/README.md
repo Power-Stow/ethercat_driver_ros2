@@ -5,6 +5,13 @@
 `ethercat_generic_cia402_drive` provides a generic CiA402 EtherCAT slave plugin for `ethercat_driver_ros2`.
 It maps configured RPDO/TPDO channels to ros2_control interfaces and handles CiA402 state transitions.
 
+## Health diagnostics
+
+The plugin implements `EcSlave::cia402Diagnostics()`, exposing the decoded CiA 402 device state
+(state enum, human-readable label, raw status word, and a fault flag). When `ethercat_driver` is
+launched with `publish_diagnostics:=true`, this appears per drive on `/diagnostics`, and a drive in
+`Fault` / `Fault Reaction Active` raises an `ERROR`. No configuration is required.
+
 ## CSV PDO Dump (debug)
 
 The plugin supports optional CSV dumping of all assigned PDO channels for each EtherCAT cycle.

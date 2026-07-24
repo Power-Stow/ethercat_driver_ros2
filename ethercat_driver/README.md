@@ -42,6 +42,28 @@ Set on the `<hardware>` element of the `ros2_control` system.
 `dc_sync0_shift_ns` — SYNC0 shift time in nanoseconds applied to DC slaves (default `0`).
 `activation_thread_priority` — SCHED_FIFO priority applied to the activation/bring-up loop only; `<= 0` (default) keeps normal scheduling.
 `activation_cpu_core` — CPU core the activation/bring-up loop is pinned to; `< 0` (default) leaves the CPU affinity unchanged.
+`publish_diagnostics` — enable EtherCAT health diagnostics on `/diagnostics` (default `false`).
+`diagnostics_period_s` — diagnostics publish period in seconds (default `1.0`).
+`dc_time_diff_warn_ns` — per-slave DC system-time-difference magnitude above which a `WARN` is raised (default `1000`).
+
+### Health diagnostics
+
+When `publish_diagnostics` is `true`, the driver publishes `diagnostic_msgs/DiagnosticArray` on
+`/diagnostics` from a dedicated non-real-time node (`ethercat_diagnostics`), leaving the cyclic
+`SCHED_FIFO` loop untouched apart from cheap state snapshotting. It integrates with
+`rqt_runtime_monitor` and `diagnostic_aggregator`.
+
+Published `DiagnosticStatus` entries:
+
+- **EtherCAT Master** — `slaves_responding`, `link_up`, master `al_states`, domain working counter and `wc_state` (ZERO/INCOMPLETE/COMPLETE), and a cumulative incomplete-cycle count used as a lost-frame proxy.
+- **EtherCAT Slave: `<name>`** (one per slave) — AL state (INIT/PREOP/SAFEOP/OP), `online`/`operational`, AL status code (ESC register `0x0134`), DC system-time difference (`0x092C`), DC propagation delay (`0x0928`), and CiA 402 device state for drive slaves.
+- **EtherCAT RT Timing** — cyclic-loop period min/mean/max, max jitter, and deadline-overrun count.
+
+Levels: link down or a slave offline/not-operational or a drive fault → `ERROR`; incomplete working
+counter, high DC clock drift, or loop overruns → `WARN`.
+
+The IgH realtime API does not expose Tx-error / lost-frame counters directly, so the master status
+reports the working-counter-derived incomplete-cycle count as a lost-frame proxy.
 
 ### Real-time activation loop
 
@@ -79,6 +101,7 @@ ethercat_driver/
 - `transmission_interface`: transmission loaders and runtime mapping primitives.
 - `ethercat_interface`: EtherCAT master/slave abstraction layer.
 - `pluginlib`, `rclcpp`, `rclcpp_lifecycle`: plugin and lifecycle integration.
+- `diagnostic_updater`, `diagnostic_msgs`: EtherCAT health diagnostics publishing.
 
 ### Build/Test Dependencies
 
