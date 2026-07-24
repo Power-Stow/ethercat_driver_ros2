@@ -33,6 +33,32 @@ The driver supports mixed setups where some joints use ROS 2 transmissions while
 
 For this driver, actuator names in transmission definitions must correspond to existing joint component names (the underlying EtherCAT module data channels in this driver are joint-indexed).
 
+## Hardware parameters
+
+Set on the `<hardware>` element of the `ros2_control` system.
+
+`master_id` — EtherCAT master index to request (default `0`).
+`control_frequency` — cyclic exchange rate in Hz; also the SYNC0 cycle time for DC slaves (default `100`).
+`dc_sync0_shift_ns` — SYNC0 shift time in nanoseconds applied to DC slaves (default `0`).
+`activation_thread_priority` — SCHED_FIFO priority applied to the activation/bring-up loop only; `<= 0` (default) keeps normal scheduling.
+`activation_cpu_core` — CPU core the activation/bring-up loop is pinned to; `< 0` (default) leaves the CPU affinity unchanged.
+
+### Real-time activation loop
+
+The blocking bring-up loop in `on_activate()` runs `master_->update()`, which sends the cyclic
+frames that discipline the Distributed Clocks. It runs on the (non-real-time) activation thread, not
+the `controller_manager` real-time update thread, so under a loaded/shared CPU its jitter can exceed
+the master's DC synchronization threshold — then every DC slave stalls for the full per-slave DC
+sync-wait before the master proceeds, dominating startup time.
+
+`activation_thread_priority` and `activation_cpu_core` let the loop run under `SCHED_FIFO` (and,
+optionally, pinned to a dedicated/isolated core) for its duration; the previous scheduling policy,
+priority and affinity are restored when activation completes. Both are opt-in and default to
+no-ops, preserving the original behavior. Choose a priority above the threaded-IRQ priority so the
+loop is not preempted by IRQ threads, and requires `CAP_SYS_NICE`/real-time rlimits (failures are
+logged and fall back to normal scheduling). Process memory locking is not handled here — enable the
+`controller_manager` `lock_memory` parameter (mlockall is process-wide).
+
 ## Package Organization
 
 ```text

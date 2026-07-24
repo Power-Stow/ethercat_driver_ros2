@@ -17,8 +17,13 @@
 
 #include <tinyxml2.h>
 
+#include <pthread.h>
+#include <sched.h>
+
 #include <algorithm>
+#include <cerrno>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <regex>
@@ -43,6 +48,95 @@ void cleanup_master(
     master.reset();
   }
 }
+
+/// RAII helper that temporarily elevates the calling thread to SCHED_FIFO real-time scheduling
+/// (and optionally pins it to a single CPU core) for the duration of a scope, restoring the
+/// previous scheduling policy, priority and CPU affinity on destruction.
+///
+/// The EtherCAT bring-up loop that disciplines the Distributed Clocks runs on the (non-real-time)
+/// activation thread, not on the controller_manager real-time update thread. Sending the cyclic
+/// sync frames with low scheduling jitter is required for DC slaves to converge (system-time
+/// difference below the master threshold) within the master's DC sync-wait window; otherwise each
+/// DC slave stalls for the full wait before the master proceeds. Memory locking is intentionally
+/// not handled here: the controller_manager already locks process memory (its `lock_memory`
+/// parameter) and mlockall() is process-wide.
+class ScopedRealtimeScheduling
+{
+public:
+  /// @param priority SCHED_FIFO priority to apply; values <= 0 disable the FIFO elevation.
+  /// @param cpu_core CPU core to pin the thread to; values < 0 leave the affinity unchanged.
+  ScopedRealtimeScheduling(int priority, int cpu_core)
+  : thread_(pthread_self())
+  {
+    if (priority <= 0 && cpu_core < 0) {
+      return;
+    }
+
+    if (pthread_getschedparam(thread_, &saved_policy_, &saved_param_) == 0) {
+      sched_saved_ = true;
+    }
+    CPU_ZERO(&saved_affinity_);
+    if (pthread_getaffinity_np(thread_, sizeof(saved_affinity_), &saved_affinity_) == 0) {
+      affinity_saved_ = true;
+    }
+
+    if (priority > 0) {
+      sched_param param{};
+      param.sched_priority = priority;
+      if (pthread_setschedparam(thread_, SCHED_FIFO, &param) == 0) {
+        sched_applied_ = true;
+        RCLCPP_INFO(
+          rclcpp::get_logger("EthercatDriver"),
+          "Activation thread elevated to SCHED_FIFO priority %d.", priority);
+      } else {
+        RCLCPP_WARN(
+          rclcpp::get_logger("EthercatDriver"),
+          "Failed to set SCHED_FIFO priority %d for the activation thread (%s). "
+          "Continuing without real-time scheduling.", priority, std::strerror(errno));
+      }
+    }
+
+    if (cpu_core >= 0) {
+      cpu_set_t requested;
+      CPU_ZERO(&requested);
+      CPU_SET(cpu_core, &requested);
+      if (pthread_setaffinity_np(thread_, sizeof(requested), &requested) == 0) {
+        affinity_applied_ = true;
+        RCLCPP_INFO(
+          rclcpp::get_logger("EthercatDriver"),
+          "Activation thread pinned to CPU core %d.", cpu_core);
+      } else {
+        RCLCPP_WARN(
+          rclcpp::get_logger("EthercatDriver"),
+          "Failed to pin the activation thread to CPU core %d (%s). "
+          "Continuing with the inherited CPU affinity.", cpu_core, std::strerror(errno));
+      }
+    }
+  }
+
+  ~ScopedRealtimeScheduling()
+  {
+    if (affinity_applied_ && affinity_saved_) {
+      pthread_setaffinity_np(thread_, sizeof(saved_affinity_), &saved_affinity_);
+    }
+    if (sched_applied_ && sched_saved_) {
+      pthread_setschedparam(thread_, saved_policy_, &saved_param_);
+    }
+  }
+
+  ScopedRealtimeScheduling(const ScopedRealtimeScheduling &) = delete;
+  ScopedRealtimeScheduling & operator=(const ScopedRealtimeScheduling &) = delete;
+
+private:
+  pthread_t thread_;
+  sched_param saved_param_{};
+  cpu_set_t saved_affinity_{};
+  int saved_policy_ = 0;
+  bool sched_saved_ = false;
+  bool affinity_saved_ = false;
+  bool sched_applied_ = false;
+  bool affinity_applied_ = false;
+};
 }  // namespace
 
 namespace ethercat_driver
@@ -619,6 +713,32 @@ CallbackReturn EthercatDriver::configNetwork()
     }
   }
 
+  // Optional real-time scheduling for the activation/bring-up loop (see on_activate()).
+  activation_thread_priority_ = 0;
+  if (info_.hardware_parameters.find("activation_thread_priority") !=
+    info_.hardware_parameters.end())
+  {
+    try {
+      activation_thread_priority_ =
+        std::stoi(info_.hardware_parameters["activation_thread_priority"]);
+    } catch (std::exception & e) {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"), "Invalid activation_thread_priority (%s)!", e.what());
+      return CallbackReturn::ERROR;
+    }
+  }
+
+  activation_cpu_core_ = -1;
+  if (info_.hardware_parameters.find("activation_cpu_core") != info_.hardware_parameters.end()) {
+    try {
+      activation_cpu_core_ = std::stoi(info_.hardware_parameters["activation_cpu_core"]);
+    } catch (std::exception & e) {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"), "Invalid activation_cpu_core (%s)!", e.what());
+      return CallbackReturn::ERROR;
+    }
+  }
+
   // start EC and wait until state operative
 
   master_->setCtrlFrequency(control_frequency_);
@@ -710,6 +830,13 @@ CallbackReturn EthercatDriver::on_activate(
     master_->registerTransferInDomain(ec_transfer_nets_);
     RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Transfer network configured!");
   }
+
+  // Elevate this thread to real-time scheduling for the blocking bring-up loop below. The loop
+  // drives master_->update(), which sends the cyclic EtherCAT frames that discipline the
+  // Distributed Clocks; sending them with low jitter lets DC slaves converge within the master's
+  // DC sync-wait window instead of stalling for the full timeout. Scheduling is restored on exit.
+  const ScopedRealtimeScheduling activation_scheduling(
+    activation_thread_priority_, activation_cpu_core_);
 
   // start after one second
   struct timespec t;
