@@ -18,15 +18,21 @@
 #include <tinyxml2.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <regex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
+#include "diagnostic_msgs/msg/diagnostic_status.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/rclcpp.hpp"
 
@@ -41,6 +47,53 @@ void cleanup_master(
   if (master) {
     master->shutdown();
     master.reset();
+  }
+}
+
+/// Human-readable name for an EtherCAT application-layer (AL) state value.
+std::string al_state_to_string(uint8_t al_state)
+{
+  switch (al_state) {
+    case 1: return "INIT";
+    case 2: return "PREOP";
+    case 3: return "BOOT";
+    case 4: return "SAFEOP";
+    case 8: return "OP";
+    default: {
+      char buffer[16];
+      std::snprintf(buffer, sizeof(buffer), "0x%02X", al_state);
+      return std::string(buffer);
+    }
+  }
+}
+
+/// Human-readable description for a subset of the standard EtherCAT AL status codes (ETG.1000).
+const char * al_status_code_to_string(uint16_t code)
+{
+  switch (code) {
+    case 0x0000: return "No error";
+    case 0x0001: return "Unspecified error";
+    case 0x0002: return "No memory";
+    case 0x0011: return "Invalid requested state change";
+    case 0x0012: return "Unknown requested state";
+    case 0x0013: return "Bootstrap not supported";
+    case 0x0014: return "No valid firmware";
+    case 0x0016: return "Invalid mailbox configuration";
+    case 0x0017: return "Invalid sync manager configuration";
+    case 0x0018: return "No valid inputs available";
+    case 0x001B: return "Sync manager watchdog";
+    case 0x001D: return "Invalid output configuration";
+    case 0x001E: return "Invalid input configuration";
+    case 0x0024: return "Invalid FMMU configuration";
+    case 0x0028: return "DC PLL sync error";
+    case 0x0029: return "DC sync IO error";
+    case 0x002A: return "DC sync timeout";
+    case 0x002C: return "Fatal sync error";
+    case 0x002D: return "No sync error";
+    case 0x0030: return "Invalid DC sync configuration";
+    case 0x0032: return "DC sync error";
+    case 0x0035: return "DC sync out of range";
+    default: return "Unknown";
   }
 }
 }  // namespace
@@ -624,6 +677,11 @@ CallbackReturn EthercatDriver::configNetwork()
   master_->setCtrlFrequency(control_frequency_);
   master_->setDcSync0Shift(dc_sync0_shift_ns);
 
+  // Diagnostics collection must be enabled before activate() so the master can create the
+  // per-slave ESC register requests during activation.
+  parseDiagnosticsParameters();
+  master_->setDiagnosticsEnabled(publish_diagnostics_);
+
   for (auto i = 0ul; i < ec_modules_.size(); i++) {
     master_->addSlave(ec_modules_[i].get());
   }
@@ -745,6 +803,9 @@ CallbackReturn EthercatDriver::on_activate(
 
   activated_ = true;
 
+  // Start the (non-real-time) health-diagnostics publisher once the bus is operational.
+  startDiagnostics();
+
   return CallbackReturn::SUCCESS;
 }
 
@@ -756,6 +817,7 @@ CallbackReturn EthercatDriver::on_deactivate(
 
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Stopping ...please wait...");
 
+  stopDiagnostics();
   cleanup_master(master_, activated_);
 
   RCLCPP_INFO(
@@ -772,6 +834,9 @@ hardware_interface::return_type EthercatDriver::read(
   const std::unique_lock<std::mutex> lock(ec_mutex_, std::try_to_lock);
   if (lock.owns_lock() && activated_) {
     master_->readData();
+    if (publish_diagnostics_) {
+      updateTimingStatistics();
+    }
     for (auto & transmission : transmissions_) {
       transmission->actuator_to_joint(raw_joint_states_, hw_joint_states_);
     }
@@ -791,6 +856,7 @@ CallbackReturn EthercatDriver::on_shutdown(
 
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Shutdown cleanup ...please wait...");
 
+  stopDiagnostics();
   cleanup_master(master_, activated_);
   cleanupPluginsForShutdown();
 
@@ -806,6 +872,7 @@ CallbackReturn EthercatDriver::on_error(
 
   RCLCPP_ERROR(rclcpp::get_logger("EthercatDriver"), "Error cleanup ...please wait...");
 
+  stopDiagnostics();
   cleanup_master(master_, activated_);
 
   RCLCPP_ERROR(rclcpp::get_logger("EthercatDriver"), "Error cleanup complete.");
@@ -831,6 +898,255 @@ hardware_interface::return_type EthercatDriver::write(
       "Could not acquire lock to write data to EtherCAT master, skipping this cycle.");
   }
   return hardware_interface::return_type::OK;
+}
+
+void EthercatDriver::parseDiagnosticsParameters()
+{
+  publish_diagnostics_ = false;
+  auto it = info_.hardware_parameters.find("publish_diagnostics");
+  if (it != info_.hardware_parameters.end()) {
+    std::string value = it->second;
+    std::transform(value.begin(), value.end(), value.begin(), ::tolower);
+    publish_diagnostics_ = (value == "true" || value == "1");
+  }
+
+  diagnostics_period_s_ = 1.0;
+  it = info_.hardware_parameters.find("diagnostics_period_s");
+  if (it != info_.hardware_parameters.end()) {
+    try {
+      diagnostics_period_s_ = std::stod(it->second);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(
+        rclcpp::get_logger("EthercatDriver"),
+        "Invalid diagnostics_period_s (%s); using %.2f s.", e.what(), diagnostics_period_s_);
+    }
+  }
+
+  dc_time_diff_warn__ns_ = 1000;
+  it = info_.hardware_parameters.find("dc_time_diff_warn_ns");
+  if (it != info_.hardware_parameters.end()) {
+    try {
+      dc_time_diff_warn__ns_ = static_cast<int32_t>(std::stol(it->second));
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(
+        rclcpp::get_logger("EthercatDriver"),
+        "Invalid dc_time_diff_warn_ns (%s); using %d ns.", e.what(), dc_time_diff_warn__ns_);
+    }
+  }
+}
+
+void EthercatDriver::updateTimingStatistics()
+{
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  if (timing_last_valid_) {
+    const double dt =
+      static_cast<double>(now.tv_sec - timing_last_ts_.tv_sec) +
+      static_cast<double>(now.tv_nsec - timing_last_ts_.tv_nsec) * 1e-9;
+    const double expected_period_s =
+      (control_frequency_ > 0.0) ? (1.0 / control_frequency_) : 0.0;
+
+    const std::lock_guard<std::mutex> lock(timing_mutex_);
+    if (timing_sample_count_ == 0) {
+      timing_period_min_s_ = dt;
+      timing_period_max_s_ = dt;
+    } else {
+      timing_period_min_s_ = std::min(timing_period_min_s_, dt);
+      timing_period_max_s_ = std::max(timing_period_max_s_, dt);
+    }
+    timing_period_sum_s_ += dt;
+    ++timing_sample_count_;
+    timing_period_mean_s_ = timing_period_sum_s_ / static_cast<double>(timing_sample_count_);
+    if (expected_period_s > 0.0 && dt > 1.5 * expected_period_s) {
+      ++timing_overrun_count_;
+    }
+    timing_valid_ = true;
+  }
+  timing_last_ts_ = now;
+  timing_last_valid_ = true;
+}
+
+void EthercatDriver::startDiagnostics()
+{
+  if (!publish_diagnostics_) {
+    return;
+  }
+
+  // Reset the timing statistics accumulated during any previous activation.
+  {
+    const std::lock_guard<std::mutex> lock(timing_mutex_);
+    timing_valid_ = false;
+    timing_last_valid_ = false;
+    timing_period_min_s_ = 0.0;
+    timing_period_max_s_ = 0.0;
+    timing_period_mean_s_ = 0.0;
+    timing_period_sum_s_ = 0.0;
+    timing_sample_count_ = 0;
+    timing_overrun_count_ = 0;
+  }
+
+  diagnostics_node_ = std::make_shared<rclcpp::Node>("ethercat_diagnostics");
+  diagnostics_updater_ =
+    std::make_unique<diagnostic_updater::Updater>(diagnostics_node_, diagnostics_period_s_);
+  diagnostics_updater_->setHardwareID("ethercat_master");
+
+  diagnostics_updater_->add("EtherCAT Master", this, &EthercatDriver::produceMasterDiagnostics);
+  diagnostics_updater_->add("EtherCAT RT Timing", this, &EthercatDriver::produceTimingDiagnostics);
+
+  for (size_t i = 0; i < ec_modules_.size(); ++i) {
+    std::string name = "EtherCAT Slave " + std::to_string(i);
+    if (i < ec_module_parameters_.size()) {
+      const auto name_it = ec_module_parameters_[i].find("name");
+      if (name_it != ec_module_parameters_[i].end()) {
+        name = "EtherCAT Slave: " + name_it->second;
+      }
+    }
+    diagnostics_updater_->add(
+      name, [this, i](diagnostic_updater::DiagnosticStatusWrapper & stat) {
+        produceSlaveDiagnostics(stat, i);
+      });
+  }
+
+  // The updater has no subscriptions, so rather than spin an executor we simply force an
+  // update at the configured period. force_update() runs every task and publishes immediately.
+  diagnostics_thread_running_ = true;
+  diagnostics_thread_ = std::thread(
+    [this]() {
+      const auto tick = std::chrono::milliseconds(100);
+      double elapsed_s = diagnostics_period_s_;  // publish on the first iteration
+      while (rclcpp::ok() && diagnostics_thread_running_) {
+        if (elapsed_s >= diagnostics_period_s_) {
+          diagnostics_updater_->force_update();
+          elapsed_s = 0.0;
+        }
+        std::this_thread::sleep_for(tick);
+        elapsed_s += 0.1;
+      }
+    });
+
+  RCLCPP_INFO(
+    rclcpp::get_logger("EthercatDriver"),
+    "EtherCAT diagnostics publishing to /diagnostics every %.2f s.", diagnostics_period_s_);
+}
+
+void EthercatDriver::stopDiagnostics()
+{
+  diagnostics_thread_running_ = false;
+  if (diagnostics_thread_.joinable()) {
+    diagnostics_thread_.join();
+  }
+  diagnostics_updater_.reset();
+  diagnostics_node_.reset();
+}
+
+void EthercatDriver::produceMasterDiagnostics(
+  diagnostic_updater::DiagnosticStatusWrapper & stat)
+{
+  using diagnostic_msgs::msg::DiagnosticStatus;
+  if (!master_) {
+    stat.summary(DiagnosticStatus::ERROR, "EtherCAT master not available");
+    return;
+  }
+  const auto diag = master_->getDiagnostics();
+
+  stat.add("slaves_responding", diag.slaves_responding);
+  stat.add("link_up", diag.link_up ? "true" : "false");
+  stat.addf("al_states", "0x%02X", diag.al_states);
+  stat.add("domain_working_counter", diag.working_counter);
+  const char * wc_state =
+    (diag.wc_state == 2) ? "COMPLETE" : (diag.wc_state == 1) ? "INCOMPLETE" : "ZERO";
+  stat.add("domain_wc_state", wc_state);
+  stat.add("incomplete_cycles", diag.incomplete_cycle_count);
+  stat.add("total_cycles", diag.update_count);
+
+  if (!diag.link_up) {
+    stat.summary(DiagnosticStatus::ERROR, "EtherCAT link down");
+  } else if (diag.wc_state != 2) {
+    stat.summary(DiagnosticStatus::WARN, "Domain working counter incomplete (frame loss)");
+  } else {
+    stat.summary(DiagnosticStatus::OK, "EtherCAT master operational");
+  }
+}
+
+void EthercatDriver::produceSlaveDiagnostics(
+  diagnostic_updater::DiagnosticStatusWrapper & stat, size_t slave_index)
+{
+  using diagnostic_msgs::msg::DiagnosticStatus;
+  if (!master_) {
+    stat.summary(DiagnosticStatus::ERROR, "EtherCAT master not available");
+    return;
+  }
+  const auto diag = master_->getDiagnostics();
+  if (slave_index >= diag.slaves.size()) {
+    stat.summary(DiagnosticStatus::WARN, "Slave diagnostics not yet available");
+    return;
+  }
+  const auto & s = diag.slaves[slave_index];
+
+  stat.add("alias", s.alias);
+  stat.add("position", s.position);
+  stat.addf("vendor_id", "0x%08X", s.vendor_id);
+  stat.addf("product_id", "0x%08X", s.product_id);
+  stat.add("al_state", al_state_to_string(s.al_state));
+  stat.add("online", s.online ? "true" : "false");
+  stat.add("operational", s.operational ? "true" : "false");
+  if (s.al_status_code_valid) {
+    stat.addf(
+      "al_status_code", "0x%04X (%s)",
+      s.al_status_code, al_status_code_to_string(s.al_status_code));
+  }
+  if (s.dc_system_time_diff_valid) {
+    stat.add("dc_system_time_diff_ns", s.dc_system_time_diff__ns);
+  }
+  if (s.dc_propagation_delay_valid) {
+    stat.add("dc_propagation_delay_ns", s.dc_propagation_delay__ns);
+  }
+  if (s.has_cia402) {
+    stat.add("cia402_state", s.cia402.device_state_label);
+    stat.addf("status_word", "0x%04X", s.cia402.status_word);
+  }
+
+  if (!s.online) {
+    stat.summary(DiagnosticStatus::ERROR, "Slave offline");
+  } else if (!s.operational) {
+    stat.summary(
+      DiagnosticStatus::ERROR,
+      "Slave not operational (AL state " + al_state_to_string(s.al_state) + ")");
+  } else if (s.has_cia402 && s.cia402.in_fault) {
+    stat.summary(DiagnosticStatus::ERROR, "Drive fault: " + s.cia402.device_state_label);
+  } else if (s.dc_system_time_diff_valid &&
+    std::abs(s.dc_system_time_diff__ns) > dc_time_diff_warn__ns_)
+  {
+    stat.summary(DiagnosticStatus::WARN, "DC clock drift high");
+  } else {
+    stat.summary(DiagnosticStatus::OK, "Operational");
+  }
+}
+
+void EthercatDriver::produceTimingDiagnostics(
+  diagnostic_updater::DiagnosticStatusWrapper & stat)
+{
+  using diagnostic_msgs::msg::DiagnosticStatus;
+  const std::lock_guard<std::mutex> lock(timing_mutex_);
+  if (!timing_valid_) {
+    stat.summary(DiagnosticStatus::OK, "No timing samples yet");
+    return;
+  }
+  const double expected_period_s =
+    (control_frequency_ > 0.0) ? (1.0 / control_frequency_) : 0.0;
+  stat.add("expected_period_ms", expected_period_s * 1e3);
+  stat.add("period_mean_ms", timing_period_mean_s_ * 1e3);
+  stat.add("period_min_ms", timing_period_min_s_ * 1e3);
+  stat.add("period_max_ms", timing_period_max_s_ * 1e3);
+  stat.add("jitter_max_ms", (timing_period_max_s_ - expected_period_s) * 1e3);
+  stat.add("overrun_count", timing_overrun_count_);
+  stat.add("sample_count", timing_sample_count_);
+
+  if (timing_overrun_count_ > 0) {
+    stat.summary(DiagnosticStatus::WARN, "Cyclic loop deadline overruns detected");
+  } else {
+    stat.summary(DiagnosticStatus::OK, "Cyclic loop timing nominal");
+  }
 }
 
 void EthercatDriver::configureTransmissions()

@@ -19,13 +19,16 @@
 
 #include <time.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "ethercat_interface/ec_diagnostics.hpp"
 #include "ethercat_interface/ec_slave.hpp"
 #include "ethercat_interface/ec_transfer.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -205,6 +208,14 @@ public:
   virtual void readData(uint32_t domain = 0);
   virtual void writeData(uint32_t domain = 0);
 
+  /** Enable EtherCAT health-diagnostics collection. Must be called before activate() so
+   *  per-slave ESC register requests can be created. Disabled by default (no overhead). */
+  void setDiagnosticsEnabled(bool enabled) {diagnostics_enabled_ = enabled;}
+
+  /** @brief Thread-safe copy of the latest EtherCAT health snapshot.
+   *  Intended for a non-real-time publisher; safe to call concurrently with the cyclic loop. */
+  MasterDiagnostics getDiagnostics() const;
+
   /** @brief Fill in the EcTransferInfo structures
   *
   * @param transfer_nets transfer nets
@@ -274,6 +285,15 @@ protected:
   /** check for change in the slave states */
   void checkSlaveStates();
 
+  /** create the per-slave ESC register requests used for diagnostics (call before activate) */
+  void createRegisterRequests();
+
+  /** service the per-slave register requests at a low cadence from the cyclic loop */
+  void serviceRegisterRequests();
+
+  /** copy the current master/domain/slave state into the diagnostics snapshot */
+  void updateDiagnosticsSnapshot(uint32_t domain);
+
   /** call IgH DC sync functions from a consistent point in the cycle */
   void syncDistributedClocks();
 
@@ -313,6 +333,18 @@ protected:
     EcSlave * slave = NULL;
     ec_slave_config_t * config = NULL;
     ec_slave_config_state_t config_state = {0, 0, 0};
+
+    // Diagnostics: per-slave ESC register requests and their latest decoded values.
+    ec_reg_request_t * al_status_reg = NULL;    //< ESC register 0x0134 request.
+    ec_reg_request_t * dc_time_diff_reg = NULL;  //< ESC register 0x092C request.
+    ec_reg_request_t * dc_delay_reg = NULL;      //< ESC register 0x0928 request.
+
+    uint16_t al_status_code = 0;
+    bool al_status_code_valid = false;
+    int32_t dc_system_time_diff_ns = 0;
+    bool dc_system_time_diff_valid = false;
+    uint32_t dc_propagation_delay_ns = 0;
+    bool dc_propagation_delay_valid = false;
   };
 
   std::vector<SlaveInfo> slave_info_;
@@ -323,6 +355,24 @@ protected:
   /** frequency to check for master or slave state change.
    *  state checked every frequency_ control loops */
   uint32_t check_state_frequency_ = 10;
+
+  /** whether health-diagnostics collection is active (set before activate()) */
+  bool diagnostics_enabled_ = false;
+
+  /** ESC register requests are serviced every this many control loops */
+  uint32_t reg_read_frequency_ = 1000;
+
+  /** cumulative cycles with an incomplete domain working counter (lost-frame proxy) */
+  std::atomic<uint64_t> incomplete_cycle_count_{0};
+
+  /** guards diagnostics_ against concurrent access by the non-real-time publisher */
+  mutable std::mutex diagnostics_mutex_;
+
+  /** latest health snapshot, published under diagnostics_mutex_ */
+  MasterDiagnostics diagnostics_;
+
+  /** reusable scratch buffer so snapshot assembly is allocation-free in steady state */
+  MasterDiagnostics diagnostics_scratch_;
 
   uint32_t interval_;
 

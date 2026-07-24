@@ -17,12 +17,14 @@
 
 #include <ecrt.h>
 #include <map>
+#include <optional>
 #include <vector>
 #include <unordered_map>
 #include <iostream>
 #include <cmath>
 #include <string>
 
+#include "ethercat_interface/ec_diagnostics.hpp"
 #include "ethercat_interface/ec_sdo_manager.hpp"
 
 namespace ethercat_interface
@@ -51,6 +53,9 @@ public:
   virtual const ec_sync_info_t * syncs() {return NULL;}
   virtual bool initialized() {return true;}
   virtual void set_state_is_operational(bool value) {is_operational_ = value;}
+  /** CiA 402 device-state summary for health monitoring, if this slave is a drive.
+   *  Called from the cyclic thread; default has no drive semantics. */
+  virtual std::optional<Cia402Diagnostics> cia402Diagnostics() {return std::nullopt;}
   /** Assign activate DC synchronization. return activate word*/
   virtual int assign_activate_dc_sync() {return 0x00;}
   /** number of elements in the syncs array. */

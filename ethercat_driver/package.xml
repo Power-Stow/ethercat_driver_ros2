@@ -9,6 +9,8 @@
 
   <buildtool_depend>ament_cmake_ros</buildtool_depend>
 
+  <depend>diagnostic_msgs</depend>
+  <depend>diagnostic_updater</depend>
   <depend>hardware_interface</depend>
   <depend>pluginlib</depend>
   <depend>rclcpp</depend>
