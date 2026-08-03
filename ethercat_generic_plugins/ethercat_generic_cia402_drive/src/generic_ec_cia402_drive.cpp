@@ -17,6 +17,7 @@
 #include "ethercat_generic_plugins/generic_ec_cia402_drive.hpp"
 
 #include <cmath>
+#include <rclcpp/logging.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 #include <numeric>
@@ -99,11 +100,12 @@ void EcCiA402Drive::updateState()
   if (status_word_ != last_status_word_) {
     state_ = deviceState(status_word_);
     if (state_ != last_state_) {
-      RCLCPP_INFO(
+      RCLCPP_WARN(
         rclcpp::get_logger("EthercatDriver"),
-        "STATE: %s with status word :%d",
+        "STATE: %s with status word :%d [slave pos: %u]",
         DEVICE_STATE_STR.at(state_).c_str(),
-        status_word_
+        status_word_,
+        position_
       );
     }
   }
