@@ -31,6 +31,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <optional>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -46,6 +47,15 @@ void cleanup_master(
   if (master) {
     master->shutdown();
     master.reset();
+  }
+}
+
+template <class T, class... Args>
+std::optional<T> try_make_optional(Args... args) {
+  try {
+    return std::optional<T>(std::forward<Args>(args)...);
+  } catch (...) {
+    return std::nullopt;
   }
 }
 
@@ -860,32 +870,8 @@ CallbackReturn EthercatDriver::on_activate(
   // drives master_->update(), which sends the cyclic EtherCAT frames that discipline the
   // Distributed Clocks; sending them with low jitter lets DC slaves converge within the master's
   // DC sync-wait window instead of stalling for the full timeout. Scheduling is restored on exit.
-  const auto scoped_realtime_scheduling = [this]() -> std::unique_ptr<ScopedRealtimeScheduling> {
-    if (activation_thread_priority_ <= 0) {
-      return nullptr;
-    } else {
-      try {
-        return std::make_unique<ScopedRealtimeScheduling>(activation_thread_priority_);
-      } catch (...)
-      {
-        return nullptr;
-      }
-    }
-  }();
-
-  const auto scoped_cpu_affinity = [this]() -> std::unique_ptr<ScopedCpuAffinity> {
-    if (activation_cpu_core_ < 0) {
-      return nullptr;
-    } else {
-      try {
-        return std::make_unique<ScopedCpuAffinity>(activation_cpu_core_);
-      } catch (...)
-      {
-        return nullptr;
-      }
-    }
-  }();
-
+  const auto scoped_realtime_scheduling = activation_thread_priority_ <= 0 ? std::nullopt : try_make_optional<const ScopedRealtimeScheduling>(activation_thread_priority_);
+  const auto scoped_cpu_affinity = activation_cpu_core_ < 0 ? std::nullopt : try_make_optional<const ScopedCpuAffinity>(activation_cpu_core_);
   // start after one second
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
