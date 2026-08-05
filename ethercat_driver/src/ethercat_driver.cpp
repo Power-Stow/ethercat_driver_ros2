@@ -23,9 +23,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <limits>
 #include <memory>
@@ -1161,6 +1161,14 @@ CallbackReturn EthercatDriver::on_activate(
     RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Transfer network configured!");
   }
 
+  // Start the (non-real-time) health-diagnostics publisher *before* the blocking bring-up loop so
+  // that a slave stuck reaching OP (e.g. DC not converging) is still observable on /diagnostics.
+  // The bring-up loop below drives master_->update(), which populates the snapshot; the publisher
+  // reads it via getDiagnostics() (a separate lock), so it keeps publishing even while this
+  // activation thread is busy in the loop.
+  // Started before the priority elevation below so the publisher thread does not inherit SCHED_FIFO.
+  startDiagnostics();
+
   // Elevate this thread to real-time scheduling for the blocking bring-up loop below. The loop
   // drives master_->update(), which sends the cyclic EtherCAT frames that discipline the
   // Distributed Clocks; sending them with low jitter lets DC slaves converge within the master's
@@ -1315,9 +1323,6 @@ CallbackReturn EthercatDriver::on_activate(
     rclcpp::get_logger("EthercatDriver"), "System Successfully started!");
 
   activated_ = true;
-
-  // Start the (non-real-time) health-diagnostics publisher once the bus is operational.
-  startDiagnostics();
 
   return CallbackReturn::SUCCESS;
 }
