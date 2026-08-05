@@ -27,6 +27,7 @@
 #include <sstream>
 #include <bitset>
 #include <cstring>
+#include <utility>
 
 namespace ethercat_interface
 {
@@ -291,6 +292,11 @@ bool EcMaster::activate()
     return false;
   }
 
+  // Register requests must be created before ecrt_master_activate().
+  if (diagnostics_enabled_) {
+    createRegisterRequests();
+  }
+
   // register domain
   for (auto & iter : domain_info_) {
     DomainInfo * domain_info = iter.second;
@@ -359,6 +365,15 @@ void EcMaster::update(uint32_t domain)
     checkSlaveStates();
   }
 
+  // refresh the health snapshot (cheap; no-op unless diagnostics are enabled)
+  if (diagnostics_enabled_ && update_counter_ % check_state_frequency_ == 0) {
+    // Register requests self-pace via their own BUSY state, so servicing them at the snapshot
+    // cadence (rather than a slow fixed gate) keeps register-derived values, such as the DC
+    // system-time difference, refreshing promptly instead of lagging by hundreds of cycles.
+    serviceRegisterRequests();
+    updateDiagnosticsSnapshot(domain);
+  }
+
   // read and write process data
   for (DomainInfo::Entry & entry : domain_info->entries) {
     entry.slave->set_process_phase("update");
@@ -403,6 +418,15 @@ void EcMaster::readData(uint32_t domain)
   if (update_counter_ % check_state_frequency_ == 0) {
     checkMasterState();
     checkSlaveStates();
+  }
+
+  // refresh the health snapshot (cheap; no-op unless diagnostics are enabled)
+  if (diagnostics_enabled_ && update_counter_ % check_state_frequency_ == 0) {
+    // Register requests self-pace via their own BUSY state, so servicing them at the snapshot
+    // cadence (rather than a slow fixed gate) keeps register-derived values, such as the DC
+    // system-time difference, refreshing promptly instead of lagging by hundreds of cycles.
+    serviceRegisterRequests();
+    updateDiagnosticsSnapshot(domain);
   }
 
   // read and write process data
@@ -555,6 +579,11 @@ void EcMaster::checkDomainState(uint32_t domain)
       )
     );
   }
+  // Track incomplete cycles as a lost-frame proxy (the ecrt realtime API does not expose
+  // tx-error / lost-frame counters directly).
+  if (diagnostics_enabled_ && ds.wc_state != EC_WC_COMPLETE) {
+    incomplete_cycle_count_.fetch_add(1, std::memory_order_relaxed);
+  }
   domain_info->domain_state = ds;
 }
 
@@ -609,6 +638,129 @@ void EcMaster::checkSlaveStates()
     }
     slave.config_state = s;
   }
+}
+
+void EcMaster::createRegisterRequests()
+{
+  for (SlaveInfo & slave : slave_info_) {
+    if (slave.config == nullptr) {
+      continue;
+    }
+    slave.al_status_reg = ecrt_slave_config_create_reg_request(slave.config, 2);
+    slave.dc_time_diff_reg = ecrt_slave_config_create_reg_request(slave.config, 4);
+    slave.dc_delay_reg = ecrt_slave_config_create_reg_request(slave.config, 4);
+    if (slave.al_status_reg == nullptr || slave.dc_time_diff_reg == nullptr ||
+      slave.dc_delay_reg == nullptr)
+    {
+      printWarning("Diagnostics: failed to create a register request for a slave.");
+    }
+  }
+}
+
+void EcMaster::serviceRegisterRequests()
+{
+  for (SlaveInfo & slave : slave_info_) {
+    // AL status code (ESC register 0x0134, 2 bytes): reason a slave left OP.
+    if (slave.al_status_reg != nullptr) {
+      const ec_request_state_t state = ecrt_reg_request_state(slave.al_status_reg);
+      if (state == EC_REQUEST_SUCCESS) {
+        slave.al_status_code = EC_READ_U16(ecrt_reg_request_data(slave.al_status_reg));
+        slave.al_status_code_valid = true;
+        ecrt_reg_request_read(slave.al_status_reg, 0x0134, 2);
+      } else if (state != EC_REQUEST_BUSY) {
+        ecrt_reg_request_read(slave.al_status_reg, 0x0134, 2);
+      }
+    }
+
+    // DC system time difference (ESC register 0x092C, 4 bytes): bit 31 is the sign.
+    if (slave.dc_time_diff_reg != nullptr) {
+      const ec_request_state_t state = ecrt_reg_request_state(slave.dc_time_diff_reg);
+      if (state == EC_REQUEST_SUCCESS) {
+        const uint32_t raw = EC_READ_U32(ecrt_reg_request_data(slave.dc_time_diff_reg));
+        const int32_t magnitude = static_cast<int32_t>(raw & 0x7FFFFFFFu);
+        slave.dc_system_time_diff_ns = (raw & 0x80000000u) ? -magnitude : magnitude;
+        slave.dc_system_time_diff_valid = true;
+        ecrt_reg_request_read(slave.dc_time_diff_reg, 0x092C, 4);
+      } else if (state != EC_REQUEST_BUSY) {
+        ecrt_reg_request_read(slave.dc_time_diff_reg, 0x092C, 4);
+      }
+    }
+
+    // DC propagation delay (ESC register 0x0928, 4 bytes): static after DC init, read once.
+    if (slave.dc_delay_reg != nullptr && !slave.dc_propagation_delay_valid) {
+      const ec_request_state_t state = ecrt_reg_request_state(slave.dc_delay_reg);
+      if (state == EC_REQUEST_SUCCESS) {
+        slave.dc_propagation_delay_ns = EC_READ_U32(ecrt_reg_request_data(slave.dc_delay_reg));
+        slave.dc_propagation_delay_valid = true;
+      } else if (state != EC_REQUEST_BUSY) {
+        ecrt_reg_request_read(slave.dc_delay_reg, 0x0928, 4);
+      }
+    }
+  }
+}
+
+void EcMaster::updateDiagnosticsSnapshot(uint32_t domain)
+{
+  // Assemble into a reusable scratch buffer so that, once warmed up, this does not allocate
+  // (the vector keeps its capacity and the small strings reuse their buffers). Only an O(1)
+  // swap happens under the lock, keeping the real-time critical section minimal.
+  MasterDiagnostics & snapshot = diagnostics_scratch_;
+  snapshot.slaves_responding = master_state_.slaves_responding;
+  snapshot.al_states = master_state_.al_states;
+  snapshot.link_up = master_state_.link_up != 0;
+  snapshot.working_counter = 0;
+  snapshot.wc_state = 0;
+
+  auto domain_it = domain_info_.find(domain);
+  if (domain_it != domain_info_.end() && domain_it->second != nullptr) {
+    snapshot.working_counter = domain_it->second->domain_state.working_counter;
+    snapshot.wc_state = static_cast<uint8_t>(domain_it->second->domain_state.wc_state);
+  }
+  snapshot.incomplete_cycle_count = incomplete_cycle_count_.load(std::memory_order_relaxed);
+  snapshot.update_count = update_counter_;
+
+  snapshot.slaves.resize(slave_info_.size());
+  for (size_t i = 0; i < slave_info_.size(); ++i) {
+    SlaveInfo & slave = slave_info_[i];
+    SlaveDiagnostics & sd = snapshot.slaves[i];
+    if (slave.slave != nullptr) {
+      sd.alias = slave.slave->alias_;
+      sd.position = slave.slave->position_;
+      sd.vendor_id = slave.slave->vendor_id_;
+      sd.product_id = slave.slave->product_id_;
+    }
+    sd.al_state = static_cast<uint8_t>(slave.config_state.al_state);
+    sd.online = slave.config_state.online != 0;
+    sd.operational = slave.config_state.operational != 0;
+    sd.al_status_code = slave.al_status_code;
+    sd.al_status_code_valid = slave.al_status_code_valid;
+    sd.dc_system_time_diff__ns = slave.dc_system_time_diff_ns;
+    sd.dc_system_time_diff_valid = slave.dc_system_time_diff_valid;
+    sd.dc_propagation_delay__ns = slave.dc_propagation_delay_ns;
+    sd.dc_propagation_delay_valid = slave.dc_propagation_delay_valid;
+    sd.has_cia402 = false;
+    if (slave.slave != nullptr) {
+      const auto cia402 = slave.slave->cia402Diagnostics();
+      if (cia402.has_value()) {
+        sd.has_cia402 = true;
+        sd.cia402 = cia402.value();
+      }
+    }
+  }
+
+  // Publish with a non-blocking try-lock so the cyclic (real-time) loop is never delayed by the
+  // diagnostics reader. If the lock is momentarily held by getDiagnostics(), skip publishing this
+  // round; the freshly built scratch is simply published on the next snapshot (a few cycles later).
+  std::unique_lock<std::mutex> lock(diagnostics_mutex_, std::try_to_lock);
+  if (lock.owns_lock()) {
+    std::swap(diagnostics_, diagnostics_scratch_);
+  }
+}
+
+MasterDiagnostics EcMaster::getDiagnostics() const
+{
+  const std::lock_guard<std::mutex> lock(diagnostics_mutex_);
+  return diagnostics_;
 }
 
 void EcMaster::checkDomainInfoValidity(
