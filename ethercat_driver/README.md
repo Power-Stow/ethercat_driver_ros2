@@ -69,6 +69,14 @@ DC clocks not converging) stays observable on `/diagnostics` — the per-slave s
 state it is stuck in and the AL status code explaining why — instead of the feed only appearing once
 bring-up has already succeeded.
 
+That bring-up loop waits as long as needed for all slaves to reach OP — reaching OP can legitimately
+take a while (DC convergence plus serial per-slave CiA 402 configuration), so there is no time-based
+timeout. Because the loop holds `ec_mutex_`, an uninterruptible wait would otherwise block process
+teardown; instead the loop polls `rclcpp::ok()`, so a `SIGINT`/`SIGTERM` (e.g. Ctrl-C, or a launch
+shutdown) preempts a slow or wedged bring-up. On such an interrupt `on_activate()` logs the slaves
+that had not reached OP, tears down the master and diagnostics, and returns an error so shutdown can
+proceed cleanly rather than requiring `SIGKILL`.
+
 ### Real-time activation loop
 
 The blocking bring-up loop in `on_activate()` runs `master_->update()`, which sends the cyclic

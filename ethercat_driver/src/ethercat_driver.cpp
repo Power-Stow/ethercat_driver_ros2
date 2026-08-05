@@ -782,7 +782,18 @@ CallbackReturn EthercatDriver::on_activate(
   t.tv_sec++;
 
   bool running = true;
+  bool interrupted = false;
   while (running) {
+    // Let SIGINT/SIGTERM preempt bring-up. rclcpp's signal handler flips rclcpp::ok() to false on
+    // its own thread, so even though this loop holds ec_mutex_ and may wait arbitrarily long for
+    // slaves to reach OP, a shutdown request can still break it out instead of hanging process
+    // teardown. There is deliberately no time-based timeout: reaching OP can legitimately take a
+    // while (DC convergence plus serial per-slave CiA 402 configuration).
+    if (!rclcpp::ok()) {
+      interrupted = true;
+      break;
+    }
+
     // wait until next shot
     clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
     // update EtherCAT bus
@@ -796,6 +807,7 @@ CallbackReturn EthercatDriver::on_activate(
     }
     if (isAllInit) {
       running = false;
+      break;
     }
     // calculate next shot. carry over nanoseconds into microseconds.
     t.tv_nsec += master_->getInterval();
@@ -803,6 +815,30 @@ CallbackReturn EthercatDriver::on_activate(
       t.tv_nsec -= 1000000000;
       t.tv_sec++;
     }
+  }
+
+  if (interrupted) {
+    for (size_t i = 0; i < ec_modules_.size(); ++i) {
+      if (!ec_modules_[i]->initialized()) {
+        const char * module_name =
+          (i < ec_module_parameters_.size() && ec_module_parameters_[i].count("name")) ?
+          ec_module_parameters_[i].at("name").c_str() : "<unknown>";
+        RCLCPP_WARN(
+          rclcpp::get_logger("EthercatDriver"),
+          "EtherCAT slave '%s' (alias %u, position %u) had not reached operational state.",
+          module_name, ec_modules_[i]->alias_, ec_modules_[i]->position_);
+      }
+    }
+    RCLCPP_WARN(
+      rclcpp::get_logger("EthercatDriver"),
+      "EtherCAT bring-up interrupted by a shutdown request before all slaves reached OP; "
+      "aborting activation.");
+    stopDiagnostics();
+    if (master_) {
+      master_->shutdown();
+      master_.reset();
+    }
+    return CallbackReturn::ERROR;
   }
 
   RCLCPP_INFO(
