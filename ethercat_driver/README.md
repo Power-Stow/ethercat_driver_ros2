@@ -63,6 +63,12 @@ counter, high DC clock drift, or loop overruns → `WARN`.
 The IgH realtime API does not expose Tx-error / lost-frame counters directly, so the master status
 reports the working-counter-derived incomplete-cycle count as a lost-frame proxy.
 
+The publisher starts as soon as the master is activated, i.e. **before** the blocking bring-up loop
+that waits for all slaves to reach OP. This means a slave stuck during initialization (for example
+DC clocks not converging) stays observable on `/diagnostics` — the per-slave status shows the AL
+state it is stuck in and the AL status code explaining why — instead of the feed only appearing once
+bring-up has already succeeded.
+
 ### Real-time activation loop
 
 The blocking bring-up loop in `on_activate()` runs `master_->update()`, which sends the cyclic

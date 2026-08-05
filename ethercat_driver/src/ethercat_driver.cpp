@@ -769,6 +769,13 @@ CallbackReturn EthercatDriver::on_activate(
     RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Transfer network configured!");
   }
 
+  // Start the (non-real-time) health-diagnostics publisher *before* the blocking bring-up loop so
+  // that a slave stuck reaching OP (e.g. DC not converging) is still observable on /diagnostics.
+  // The bring-up loop below drives master_->update(), which populates the snapshot; the publisher
+  // reads it via getDiagnostics() (a separate lock), so it keeps publishing even while this
+  // activation thread is busy in the loop.
+  startDiagnostics();
+
   // start after one second
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
@@ -802,9 +809,6 @@ CallbackReturn EthercatDriver::on_activate(
     rclcpp::get_logger("EthercatDriver"), "System Successfully started!");
 
   activated_ = true;
-
-  // Start the (non-real-time) health-diagnostics publisher once the bus is operational.
-  startDiagnostics();
 
   return CallbackReturn::SUCCESS;
 }
