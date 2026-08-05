@@ -1312,6 +1312,7 @@ CallbackReturn EthercatDriver::on_activate(
         rclcpp::get_logger("EthercatDriver"),
         "EtherCAT wind-down failed: %s. Releasing the master anyway.", e.what());
     }
+    stopDiagnostics();
     if (master_) {
       master_->shutdown();
       master_.reset();

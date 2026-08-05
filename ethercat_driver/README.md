@@ -74,6 +74,9 @@ DC clocks not converging) stays observable on `/diagnostics` — the per-slave s
 state it is stuck in and the AL status code explaining why — instead of the feed only appearing once
 bring-up has already succeeded.
 
+When bring-up fails, on a timeout or a shutdown request, `on_activate()` stops the diagnostics
+before it releases the master.
+
 ### Real-time activation loop
 
 The blocking bring-up loop in `on_activate()` runs `master_->update()`, which sends the cyclic
