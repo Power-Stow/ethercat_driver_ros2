@@ -15,6 +15,7 @@
 #include "ethercat_interface/ec_master.hpp"
 #include "ethercat_interface/ec_slave.hpp"
 
+#include <string>
 #include <unistd.h>
 #include <sys/resource.h>
 #include <pthread.h>
@@ -572,20 +573,25 @@ void EcMaster::checkMasterState()
     RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "%d slave(s).", ms.slaves_responding);
   }
   if (ms.al_states != master_state_.al_states) {
-    if (ms.al_states & 0x01) {
-        RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Master state: INIT");
-    }
-    else if (ms.al_states & 0x02) {
-        RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Master state: PRE-OP");
-    }
-    else if (ms.al_states & 0x04) {
-        RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Master state: SAFE-OP");
-    }
-    else if (ms.al_states & 0x08) {
-        RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Master state: OPERATIONAL");
-    }
-    else {
-        RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Master state: 0x%02X.", ms.al_states);
+    std::string states;
+    const auto add_state = [&states](const bool condition, const std::string & state_name) {
+      if (condition) {
+        if (!states.empty()) {
+          states += ", ";
+        }
+        states += state_name;
+      }
+    };
+
+    add_state(ms.al_states & 0x01, "INIT");
+    add_state(ms.al_states & 0x02, "PRE-OP");
+    add_state(ms.al_states & 0x04, "SAFE-OP");
+    add_state(ms.al_states & 0x08, "OPERATIONAL");
+
+    if (ms.al_states & 0xF0 || states.empty()) {
+        RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Unknown al_states: 0x%02X.", ms.al_states);
+    } else {
+        RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Master detected slave states: %s", states.c_str());
     }
   }
   if (ms.link_up != master_state_.link_up) {

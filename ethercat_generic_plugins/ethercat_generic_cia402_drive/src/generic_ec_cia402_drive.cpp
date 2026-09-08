@@ -16,7 +16,6 @@
 
 #include "ethercat_generic_plugins/generic_ec_cia402_drive.hpp"
 
-#include <cmath>
 #include <rclcpp/logging.hpp>
 #include <rclcpp/rclcpp.hpp>
 
@@ -26,6 +25,7 @@
 #include <ctime>
 #include <filesystem>
 #include <sstream>
+#include <math.h>
 
 
 namespace ethercat_generic_plugins
@@ -33,8 +33,6 @@ namespace ethercat_generic_plugins
 
 namespace
 {
-
-constexpr double POSITION_WRAP_PERIOD_RAD = 2.0 * M_PI;
 
 double raw_value_from_channel(const ethercat_interface::EcPdoChannelManager & channel)
 {
@@ -62,11 +60,6 @@ std::string module_name_for_log(const std::unordered_map<std::string, std::strin
   }
 
   return "<unknown>";
-}
-
-double wrap_to_pi(const double angle)
-{
-  return std::remainder(angle, POSITION_WRAP_PERIOD_RAD);
 }
 
 }  // namespace
@@ -332,7 +325,7 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
     last_raw_position_ = raw_value_from_channel(channel);
     bool update_position_state = true;
     if (joint_offset_startup_wrap_enabled_ && !joint_offset_startup_wrap_applied_) {
-      if (!std::isnan(channel.last_value) && channel.last_value != 0) { // ToDo: Be aware of the cases where a motor genuinely starts at 0 position, in which case the joint offset wrapping handling will not work.
+      if (!std::isnan(channel.last_value)) {
         const double candidate_position = channel.last_value + joint_offset_;
 
         RCLCPP_INFO(
@@ -342,6 +335,10 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
           joint_offset_,
           candidate_position);
 
+        constexpr auto wrap_to_pi = [](const double angle) {
+          constexpr double POSITION_WRAP_PERIOD_RAD = 2.0 * M_PI;
+          return std::remainder(angle, POSITION_WRAP_PERIOD_RAD);
+        };
         joint_offset_ += wrap_to_pi(candidate_position) - candidate_position;
 
         RCLCPP_INFO(
