@@ -66,11 +66,6 @@ public:
   explicit ScopedFifoPriority(int priority)
   : thread_(pthread_self())
   {
-    if (priority <= 0) {
-      restore_ = false;
-      return;
-    }
-
     if (pthread_getschedparam(thread_, &saved_policy_, &saved_param_)) {
       throw std::runtime_error(
               "Failed to get scheduling policy and parameters for the activation thread: " +
@@ -91,7 +86,7 @@ public:
 
   ~ScopedFifoPriority() noexcept(false)
   {
-    if (restore_ && pthread_setschedparam(thread_, saved_policy_, &saved_param_)) {
+    if (pthread_setschedparam(thread_, saved_policy_, &saved_param_)) {
       throw std::runtime_error(
         "Failed to restore scheduling policy and parameters for the activation thread: " +
         std::string(std::strerror(errno)));
@@ -105,7 +100,6 @@ private:
   pthread_t thread_;
   sched_param saved_param_{};
   int saved_policy_ = 0;
-  bool restore_ = true;
 };
 
 /// RAII helper that temporarily pins the calling thread to a single CPU core for the duration of a
@@ -120,11 +114,6 @@ public:
   explicit ScopedCpuAffinity(int cpu_core)
   : thread_(pthread_self())
   {
-    if (cpu_core < 0) {
-      restore_ = false;
-      return;
-    }
-
     CPU_ZERO(&saved_affinity_);
     if (pthread_getaffinity_np(thread_, sizeof(saved_affinity_), &saved_affinity_)) {
       throw std::runtime_error(
@@ -147,7 +136,7 @@ public:
 
   ~ScopedCpuAffinity() noexcept(false)
   {
-    if (restore_ && pthread_setaffinity_np(thread_, sizeof(saved_affinity_), &saved_affinity_)) {
+    if (pthread_setaffinity_np(thread_, sizeof(saved_affinity_), &saved_affinity_)) {
       throw std::runtime_error(
         "Failed to restore CPU affinity for the activation thread: " + std::string(std::strerror(errno)));
     }
@@ -159,7 +148,6 @@ public:
 private:
   pthread_t thread_;
   cpu_set_t saved_affinity_{};
-  bool restore_ = true;
 };
 }  // namespace
 
@@ -860,8 +848,10 @@ CallbackReturn EthercatDriver::on_activate(
   // Distributed Clocks; sending them with low jitter lets DC slaves converge within the master's
   // DC sync-wait window instead of stalling for the full timeout. Scheduling is restored on exit.
   // Constructed priority-first so destruction restores the affinity before the scheduling policy.
-  const ScopedFifoPriority activation_priority(activation_thread_priority_);
-  const ScopedCpuAffinity activation_affinity(activation_cpu_core_);
+  const std::unique_ptr<ScopedFifoPriority> activation_priority =
+    activation_thread_priority_ > 0 ? std::make_unique<ScopedFifoPriority>(activation_thread_priority_) : nullptr;
+  const std::unique_ptr<ScopedCpuAffinity> activation_affinity =
+    activation_cpu_core_ >= 0 ? std::make_unique<ScopedCpuAffinity>(activation_cpu_core_) : nullptr;
 
   // start after one second
   struct timespec t;
