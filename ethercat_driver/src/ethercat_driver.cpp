@@ -49,9 +49,8 @@ void cleanup_master(
   }
 }
 
-/// RAII helper that temporarily elevates the calling thread to SCHED_FIFO real-time scheduling
-/// (and optionally pins it to a single CPU core) for the duration of a scope, restoring the
-/// previous scheduling policy, priority and CPU affinity on destruction.
+/// RAII helper that temporarily elevates the calling thread to SCHED_FIFO real-time scheduling for
+/// the duration of a scope, restoring the previous scheduling policy and priority on destruction.
 ///
 /// The EtherCAT bring-up loop that disciplines the Distributed Clocks runs on the (non-real-time)
 /// activation thread, not on the controller_manager real-time update thread. Sending the cyclic
@@ -60,82 +59,107 @@ void cleanup_master(
 /// DC slave stalls for the full wait before the master proceeds. Memory locking is intentionally
 /// not handled here: the controller_manager already locks process memory (its `lock_memory`
 /// parameter) and mlockall() is process-wide.
-class ScopedRealtimeScheduling
+class ScopedFifoPriority
 {
 public:
   /// @param priority SCHED_FIFO priority to apply; values <= 0 disable the FIFO elevation.
-  /// @param cpu_core CPU core to pin the thread to; values < 0 leave the affinity unchanged.
-  ScopedRealtimeScheduling(int priority, int cpu_core)
+  explicit ScopedFifoPriority(int priority)
   : thread_(pthread_self())
   {
-    if (priority <= 0 && cpu_core < 0) {
+    if (priority <= 0) {
+      restore_ = false;
       return;
     }
 
-    if (pthread_getschedparam(thread_, &saved_policy_, &saved_param_) == 0) {
-      sched_saved_ = true;
-    }
-    CPU_ZERO(&saved_affinity_);
-    if (pthread_getaffinity_np(thread_, sizeof(saved_affinity_), &saved_affinity_) == 0) {
-      affinity_saved_ = true;
+    if (pthread_getschedparam(thread_, &saved_policy_, &saved_param_)) {
+      throw std::runtime_error(
+              "Failed to get scheduling policy and parameters for the activation thread: " +
+              std::string(std::strerror(errno)));
     }
 
-    if (priority > 0) {
-      sched_param param{};
-      param.sched_priority = priority;
-      if (pthread_setschedparam(thread_, SCHED_FIFO, &param) == 0) {
-        sched_applied_ = true;
-        RCLCPP_INFO(
-          rclcpp::get_logger("EthercatDriver"),
-          "Activation thread elevated to SCHED_FIFO priority %d.", priority);
-      } else {
-        RCLCPP_WARN(
-          rclcpp::get_logger("EthercatDriver"),
-          "Failed to set SCHED_FIFO priority %d for the activation thread (%s). "
-          "Continuing without real-time scheduling.", priority, std::strerror(errno));
-      }
+    sched_param param{};
+    param.sched_priority = priority;
+    if (pthread_setschedparam(thread_, SCHED_FIFO, &param)) {
+      throw std::runtime_error(
+              "Failed to set SCHED_FIFO priority " + std::to_string(priority) +
+              " for the activation thread: " + std::string(std::strerror(errno)));
     }
 
-    if (cpu_core >= 0) {
-      cpu_set_t requested;
-      CPU_ZERO(&requested);
-      CPU_SET(cpu_core, &requested);
-      if (pthread_setaffinity_np(thread_, sizeof(requested), &requested) == 0) {
-        affinity_applied_ = true;
-        RCLCPP_INFO(
-          rclcpp::get_logger("EthercatDriver"),
-          "Activation thread pinned to CPU core %d.", cpu_core);
-      } else {
-        RCLCPP_WARN(
-          rclcpp::get_logger("EthercatDriver"),
-          "Failed to pin the activation thread to CPU core %d (%s). "
-          "Continuing with the inherited CPU affinity.", cpu_core, std::strerror(errno));
-      }
-    }
+    RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"),
+      "Activation thread elevated to SCHED_FIFO priority %d.", priority);
   }
 
-  ~ScopedRealtimeScheduling()
+  ~ScopedFifoPriority() noexcept(false)
   {
-    if (affinity_applied_ && affinity_saved_) {
-      pthread_setaffinity_np(thread_, sizeof(saved_affinity_), &saved_affinity_);
-    }
-    if (sched_applied_ && sched_saved_) {
-      pthread_setschedparam(thread_, saved_policy_, &saved_param_);
+    if (restore_ && pthread_setschedparam(thread_, saved_policy_, &saved_param_)) {
+      throw std::runtime_error(
+        "Failed to restore scheduling policy and parameters for the activation thread: " +
+        std::string(std::strerror(errno)));
     }
   }
 
-  ScopedRealtimeScheduling(const ScopedRealtimeScheduling &) = delete;
-  ScopedRealtimeScheduling & operator=(const ScopedRealtimeScheduling &) = delete;
+  ScopedFifoPriority(const ScopedFifoPriority &) = delete;
+  ScopedFifoPriority & operator=(const ScopedFifoPriority &) = delete;
 
 private:
   pthread_t thread_;
   sched_param saved_param_{};
-  cpu_set_t saved_affinity_{};
   int saved_policy_ = 0;
-  bool sched_saved_ = false;
-  bool affinity_saved_ = false;
-  bool sched_applied_ = false;
-  bool affinity_applied_ = false;
+  bool restore_ = true;
+};
+
+/// RAII helper that temporarily pins the calling thread to a single CPU core for the duration of a
+/// scope, restoring the previous CPU affinity mask on destruction.
+///
+/// Pinning the activation thread keeps the Distributed Clocks bring-up loop on one core, avoiding
+/// the migration-induced jitter described for @ref ScopedFifoPriority.
+class ScopedCpuAffinity
+{
+public:
+  /// @param cpu_core CPU core to pin the thread to; values < 0 leave the affinity unchanged.
+  explicit ScopedCpuAffinity(int cpu_core)
+  : thread_(pthread_self())
+  {
+    if (cpu_core < 0) {
+      restore_ = false;
+      return;
+    }
+
+    CPU_ZERO(&saved_affinity_);
+    if (pthread_getaffinity_np(thread_, sizeof(saved_affinity_), &saved_affinity_)) {
+      throw std::runtime_error(
+              "Failed to get CPU affinity for the activation thread: " +
+              std::string(std::strerror(errno)));
+    }
+
+    cpu_set_t requested;
+    CPU_ZERO(&requested);
+    CPU_SET(cpu_core, &requested);
+    if (pthread_setaffinity_np(thread_, sizeof(requested), &requested)) {
+      throw std::runtime_error(
+              "Failed to pin the activation thread to CPU core " + std::to_string(cpu_core) +
+              ": " + std::string(std::strerror(errno)));
+    }
+
+    RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"),
+      "Activation thread pinned to CPU core %d.", cpu_core);
+  }
+
+  ~ScopedCpuAffinity() noexcept(false)
+  {
+    if (restore_ && pthread_setaffinity_np(thread_, sizeof(saved_affinity_), &saved_affinity_)) {
+      throw std::runtime_error(
+        "Failed to restore CPU affinity for the activation thread: " + std::string(std::strerror(errno)));
+    }
+  }
+
+  ScopedCpuAffinity(const ScopedCpuAffinity &) = delete;
+  ScopedCpuAffinity & operator=(const ScopedCpuAffinity &) = delete;
+
+private:
+  pthread_t thread_;
+  cpu_set_t saved_affinity_{};
+  bool restore_ = true;
 };
 }  // namespace
 
@@ -835,8 +859,9 @@ CallbackReturn EthercatDriver::on_activate(
   // drives master_->update(), which sends the cyclic EtherCAT frames that discipline the
   // Distributed Clocks; sending them with low jitter lets DC slaves converge within the master's
   // DC sync-wait window instead of stalling for the full timeout. Scheduling is restored on exit.
-  const ScopedRealtimeScheduling activation_scheduling(
-    activation_thread_priority_, activation_cpu_core_);
+  // Constructed priority-first so destruction restores the affinity before the scheduling policy.
+  const ScopedFifoPriority activation_priority(activation_thread_priority_);
+  const ScopedCpuAffinity activation_affinity(activation_cpu_core_);
 
   // start after one second
   struct timespec t;
