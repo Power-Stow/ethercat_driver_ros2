@@ -325,7 +325,10 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
     last_raw_position_ = raw_value_from_channel(channel);
     bool update_position_state = true;
     if (joint_offset_startup_wrap_enabled_ && !joint_offset_startup_wrap_applied_) {
-      if (!std::isnan(channel.last_value)) {
+      // A non-zero status word indicates that data has been received from the slave.
+      // TxPDO payload are already valid in SAFEOP, so this fires as early as possible
+      // while still waiting for a valid current position value to be available.
+      if (status_word_ != 0) {
         const double candidate_position = channel.last_value + joint_offset_;
 
         RCLCPP_INFO(
