@@ -55,9 +55,10 @@ sync-wait before the master proceeds, dominating startup time.
 optionally, pinned to a dedicated/isolated core) for its duration; the previous scheduling policy,
 priority and affinity are restored when activation completes. Both are opt-in and default to
 no-ops, preserving the original behavior. Choose a priority above the threaded-IRQ priority so the
-loop is not preempted by IRQ threads, and requires `CAP_SYS_NICE`/real-time rlimits (failures are
-logged and fall back to normal scheduling). Process memory locking is not handled here — enable the
-`controller_manager` `lock_memory` parameter (mlockall is process-wide).
+loop is not preempted by IRQ threads. Both require `CAP_SYS_NICE` or the real-time rlimits
+(`rtprio`); if the elevation fails it is logged as a warning and activation fails. Process memory
+locking is not handled here — enable the `controller_manager` `lock_memory` parameter (mlockall is
+process-wide).
 
 ## Package Organization
 
