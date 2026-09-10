@@ -139,6 +139,11 @@ protected:
 
   double control_frequency_;
 
+  /** SCHED_FIFO priority applied to the activation/bring-up loop; <= 0 disables the elevation. */
+  int activation_thread_priority_ = 0;
+  /** CPU core the activation/bring-up loop is pinned to; < 0 leaves the CPU affinity unchanged. */
+  int activation_cpu_core_ = -1;
+
   std::shared_ptr<ethercat_interface::EcMaster> master_;
   std::mutex ec_mutex_;
   bool activated_;

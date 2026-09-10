@@ -17,8 +17,12 @@
 
 #include <tinyxml2.h>
 
+#include <pthread.h>
+#include <sched.h>
+
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <regex>
@@ -43,6 +47,196 @@ void cleanup_master(
     master.reset();
   }
 }
+
+/// Logs @p message as a warning and then throws it as a std::runtime_error.
+///
+/// The log line is written first because these failures are also reported from destructors: an
+/// exception leaving a destructor while another exception unwinds out of `on_activate()` calls
+/// std::terminate(), and the log line is then the only surviving record of the cause. The severity
+/// is a warning rather than an error because `controller_manager` logs an error of its own for the
+/// exception once it reaches the hardware component boundary.
+[[noreturn]] void log_and_throw(const std::string & message)
+{
+  RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "%s", message.c_str());
+  throw std::runtime_error(message);
+}
+
+/// RAII helper that temporarily elevates the calling thread to SCHED_FIFO real-time scheduling for
+/// the duration of a scope, restoring the previous scheduling policy and priority on destruction.
+///
+/// The EtherCAT bring-up loop that disciplines the Distributed Clocks runs on the (non-real-time)
+/// activation thread, not on the controller_manager real-time update thread. Sending the cyclic
+/// sync frames with low scheduling jitter is required for DC slaves to converge (system-time
+/// difference below the master threshold) within the master's DC sync-wait window; otherwise each
+/// DC slave stalls for the full wait before the master proceeds. Memory locking is intentionally
+/// not handled here: the controller_manager already locks process memory (its `lock_memory`
+/// parameter) and mlockall() is process-wide.
+class ScopedFifoPriority
+{
+public:
+  /// @param priority SCHED_FIFO priority to apply; values <= 0 disable the FIFO elevation.
+  explicit ScopedFifoPriority(int priority)
+  : thread_(pthread_self()), elevated_priority_(priority)
+  {
+    if (const int error = pthread_getschedparam(thread_, &saved_policy_, &saved_param_)) {
+      log_and_throw(
+        "Failed to get scheduling policy and parameters for the activation thread: " +
+        std::string(std::strerror(error)));
+    }
+
+    sched_param param{};
+    param.sched_priority = priority;
+    if (const int error = pthread_setschedparam(thread_, SCHED_FIFO, &param)) {
+      log_and_throw(
+        "Failed to set SCHED_FIFO priority " + std::to_string(priority) +
+        " for the activation thread: " + std::string(std::strerror(error)));
+    }
+
+    RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"),
+      "Activation thread elevated to SCHED_FIFO priority %d.", priority);
+  }
+
+  /// Restores the saved scheduling policy and priority, then reads the scheduling state back to
+  /// confirm the thread actually left the elevated priority. A restore that reports success without
+  /// taking effect, or a saved state that was itself real-time, would otherwise leave the thread at
+  /// real-time priority with nothing in the log to show it.
+  ///
+  /// Every failure is logged and then thrown, so that a thread left under real-time scheduling
+  /// fails the activation instead of being carried silently into operation. Throwing here is a
+  /// deliberate trade: an exception leaving this destructor while another exception unwinds out of
+  /// `on_activate()` calls std::terminate(), which is why the log line is always written first.
+  ~ScopedFifoPriority() noexcept(false)
+  {
+    if (const int error = pthread_setschedparam(thread_, saved_policy_, &saved_param_)) {
+      log_and_throw(
+        "Failed to restore the activation thread to scheduling policy " +
+        std::to_string(saved_policy_) + " priority " +
+        std::to_string(saved_param_.sched_priority) + ": " + std::string(std::strerror(error)) +
+        ". The thread stays at SCHED_FIFO priority " + std::to_string(elevated_priority_) + ".");
+    }
+
+    int restored_policy = 0;
+    sched_param restored_param{};
+    if (const int error = pthread_getschedparam(thread_, &restored_policy, &restored_param)) {
+      log_and_throw(
+        "Restored the activation thread scheduling but could not read it back to confirm: " +
+        std::string(std::strerror(error)));
+    }
+
+    if (restored_policy != saved_policy_ ||
+      restored_param.sched_priority != saved_param_.sched_priority)
+    {
+      log_and_throw(
+        "Activation thread scheduling restore did not take effect: expected policy " +
+        std::to_string(saved_policy_) + " priority " +
+        std::to_string(saved_param_.sched_priority) + ", read back policy " +
+        std::to_string(restored_policy) + " priority " +
+        std::to_string(restored_param.sched_priority) + ".");
+    }
+
+    if (restored_policy == SCHED_FIFO && restored_param.sched_priority == elevated_priority_) {
+      log_and_throw(
+        "Activation thread is still at SCHED_FIFO priority " +
+        std::to_string(elevated_priority_) + " after restore: the scheduling state saved on entry "
+        "was itself real-time.");
+    }
+
+    RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"),
+      "Activation thread scheduling restored to policy %d priority %d.",
+      saved_policy_, saved_param_.sched_priority);
+  }
+
+  ScopedFifoPriority(const ScopedFifoPriority &) = delete;
+  ScopedFifoPriority & operator=(const ScopedFifoPriority &) = delete;
+
+private:
+  const pthread_t thread_;
+  sched_param saved_param_{};
+  int saved_policy_ = 0;
+  const int elevated_priority_ = 0;
+};
+
+/// RAII helper that temporarily pins the calling thread to a single CPU core for the duration of a
+/// scope, restoring the previous CPU affinity mask on destruction.
+///
+/// Pinning the activation thread keeps the Distributed Clocks bring-up loop on one core, avoiding
+/// the migration-induced jitter described for @ref ScopedFifoPriority.
+class ScopedCpuAffinity
+{
+public:
+  /// @param cpu_core CPU core to pin the thread to; values < 0 leave the affinity unchanged.
+  explicit ScopedCpuAffinity(int cpu_core)
+  : thread_(pthread_self()), pinned_core_(cpu_core)
+  {
+    CPU_ZERO(&saved_affinity_);
+    if (const int error = pthread_getaffinity_np(thread_, sizeof(saved_affinity_),
+        &saved_affinity_))
+    {
+      log_and_throw(
+        "Failed to get CPU affinity for the activation thread: " +
+        std::string(std::strerror(error)));
+    }
+
+    cpu_set_t requested;
+    CPU_ZERO(&requested);
+    CPU_SET(cpu_core, &requested);
+    if (const int error = pthread_setaffinity_np(thread_, sizeof(requested), &requested)) {
+      log_and_throw(
+        "Failed to pin the activation thread to CPU core " + std::to_string(cpu_core) +
+        ": " + std::string(std::strerror(error)));
+    }
+
+    RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"),
+      "Activation thread pinned to CPU core %d.", cpu_core);
+  }
+
+  /// Restores the saved CPU affinity mask, then reads the mask back to confirm the thread is no
+  /// longer confined to the pinned core. See @ref ScopedFifoPriority::~ScopedFifoPriority for the
+  /// trade-off that throwing from these destructors accepts.
+  ~ScopedCpuAffinity() noexcept(false)
+  {
+    if (const int error = pthread_setaffinity_np(thread_, sizeof(saved_affinity_),
+        &saved_affinity_))
+    {
+      log_and_throw(
+        "Failed to restore the CPU affinity of the activation thread: " +
+        std::string(std::strerror(error)) + ". The thread stays pinned to CPU core " +
+        std::to_string(pinned_core_) + ".");
+    }
+
+    cpu_set_t restored;
+    CPU_ZERO(&restored);
+    if (const int error = pthread_getaffinity_np(thread_, sizeof(restored), &restored)) {
+      log_and_throw(
+        "Restored the activation thread CPU affinity but could not read it back to confirm: " +
+        std::string(std::strerror(error)));
+    }
+
+    if (!CPU_EQUAL(&restored, &saved_affinity_)) {
+      log_and_throw(
+        "Activation thread CPU affinity restore did not take effect: expected " +
+        std::to_string(CPU_COUNT(&saved_affinity_)) + " CPUs, read back " +
+        std::to_string(CPU_COUNT(&restored)) + ".");
+    }
+
+    if (pinned_core_ >= 0 && CPU_COUNT(&restored) == 1 && CPU_ISSET(pinned_core_, &restored)) {
+      log_and_throw(
+        "Activation thread is still pinned to CPU core " + std::to_string(pinned_core_) +
+        " after restore: the affinity saved on entry was that core alone.");
+    }
+
+    RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"),
+      "Activation thread CPU affinity restored to %d CPUs.", CPU_COUNT(&restored));
+  }
+
+  ScopedCpuAffinity(const ScopedCpuAffinity &) = delete;
+  ScopedCpuAffinity & operator=(const ScopedCpuAffinity &) = delete;
+
+private:
+  const pthread_t thread_;
+  cpu_set_t saved_affinity_{};
+  const int pinned_core_ = -1;
+};
 }  // namespace
 
 namespace ethercat_driver
@@ -61,18 +255,19 @@ void validate_module_parameter_alignment(
   const std::vector<std::unordered_map<std::string, std::string>> & module_parameters)
 {
   if (modules.size() != module_parameters.size()) {
-    throw std::runtime_error(
-            "EtherCAT module list and module parameter list have different sizes: modules=" +
-            std::to_string(modules.size()) + ", parameters=" + std::to_string(module_parameters.size()));
+    log_and_throw(
+      "EtherCAT module list and module parameter list have different sizes: modules=" +
+      std::to_string(modules.size()) + ", parameters=" +
+      std::to_string(module_parameters.size()));
   }
 
   for (auto i = 0ul; i < modules.size(); ++i) {
     const auto parameter_position = module_position_from_parameters(module_parameters[i]);
     if (modules[i]->position_ != parameter_position) {
-      throw std::runtime_error(
-              "EtherCAT module position mismatch for module '" + module_parameters[i].at("name") +
-              "': module position=" + std::to_string(modules[i]->position_) +
-              ", parameter position=" + std::to_string(parameter_position));
+      log_and_throw(
+        "EtherCAT module position mismatch for module '" + module_parameters[i].at("name") +
+        "': module position=" + std::to_string(modules[i]->position_) +
+        ", parameter position=" + std::to_string(parameter_position));
     }
   }
 }
@@ -118,17 +313,17 @@ void getTransferMemoryInfo(
   if (!element["ec_module"]) {
     std::string msg = "Transfer definition without ec_module entry, net: " +
       transfer_net_name + " direction: " + dir;
-    throw std::runtime_error(msg);
+    log_and_throw(msg);
   }
   if (!element["index"]) {
     std::string msg = "Transfer definition without index entry, net: " +
       transfer_net_name + " direction: " + dir;
-    throw std::runtime_error(msg);
+    log_and_throw(msg);
   }
   if (!element["subindex"]) {
     std::string msg = "Transfer definition without subindex entry, net: " +
       transfer_net_name + " direction: " + dir;
-    throw std::runtime_error(msg);
+    log_and_throw(msg);
   }
 
   entry.module_name = element["ec_module"].as<std::string>();
@@ -619,6 +814,32 @@ CallbackReturn EthercatDriver::configNetwork()
     }
   }
 
+  // Optional real-time scheduling for the activation/bring-up loop (see on_activate()).
+  activation_thread_priority_ = 0;
+  if (info_.hardware_parameters.find("activation_thread_priority") !=
+    info_.hardware_parameters.end())
+  {
+    try {
+      activation_thread_priority_ =
+        std::stoi(info_.hardware_parameters["activation_thread_priority"]);
+    } catch (std::exception & e) {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"), "Invalid activation_thread_priority (%s)!", e.what());
+      return CallbackReturn::ERROR;
+    }
+  }
+
+  activation_cpu_core_ = -1;
+  if (info_.hardware_parameters.find("activation_cpu_core") != info_.hardware_parameters.end()) {
+    try {
+      activation_cpu_core_ = std::stoi(info_.hardware_parameters["activation_cpu_core"]);
+    } catch (std::exception & e) {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"), "Invalid activation_cpu_core (%s)!", e.what());
+      return CallbackReturn::ERROR;
+    }
+  }
+
   // start EC and wait until state operative
 
   master_->setCtrlFrequency(control_frequency_);
@@ -710,6 +931,16 @@ CallbackReturn EthercatDriver::on_activate(
     master_->registerTransferInDomain(ec_transfer_nets_);
     RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Transfer network configured!");
   }
+
+  // Elevate this thread to real-time scheduling for the blocking bring-up loop below. The loop
+  // drives master_->update(), which sends the cyclic EtherCAT frames that discipline the
+  // Distributed Clocks; sending them with low jitter lets DC slaves converge within the master's
+  // DC sync-wait window instead of stalling for the full timeout. Scheduling is restored on exit.
+  // Constructed priority-first so destruction restores the affinity before the scheduling policy.
+  const std::unique_ptr<ScopedFifoPriority> activation_priority =
+    activation_thread_priority_ > 0 ? std::make_unique<ScopedFifoPriority>(activation_thread_priority_) : nullptr;
+  const std::unique_ptr<ScopedCpuAffinity> activation_affinity =
+    activation_cpu_core_ >= 0 ? std::make_unique<ScopedCpuAffinity>(activation_cpu_core_) : nullptr;
 
   // start after one second
   struct timespec t;
@@ -857,24 +1088,24 @@ std::vector<std::unordered_map<std::string, std::string>> EthercatDriver::getEcM
 {
   // Check if everything OK with URDF string
   if (urdf.empty()) {
-    throw std::runtime_error("empty URDF passed to robot");
+    log_and_throw("empty URDF passed to robot");
   }
   tinyxml2::XMLDocument doc;
   if (!doc.Parse(urdf.c_str()) && doc.Error()) {
-    throw std::runtime_error("invalid URDF passed in to robot parser");
+    log_and_throw("invalid URDF passed in to robot parser");
   }
   if (doc.Error()) {
-    throw std::runtime_error("invalid URDF passed in to robot parser");
+    log_and_throw("invalid URDF passed in to robot parser");
   }
 
   tinyxml2::XMLElement * robot_it = doc.RootElement();
   if (std::string("robot").compare(robot_it->Name())) {
-    throw std::runtime_error("the robot tag is not root element in URDF");
+    log_and_throw("the robot tag is not root element in URDF");
   }
 
   const tinyxml2::XMLElement * ros2_control_it = robot_it->FirstChildElement("ros2_control");
   if (!ros2_control_it) {
-    throw std::runtime_error("no ros2_control tag");
+    log_and_throw("no ros2_control tag");
   }
 
   std::vector<std::unordered_map<std::string, std::string>> module_params;
