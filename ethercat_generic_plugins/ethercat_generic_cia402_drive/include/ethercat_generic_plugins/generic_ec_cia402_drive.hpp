@@ -76,6 +76,8 @@ protected:
   bool last_fault_reset_command_ = false;
   bool initialization_position_logged_ = false;
   double last_raw_position_ = std::numeric_limits<double>::quiet_NaN();
+  bool joint_offset_startup_wrap_enabled_ = false;
+  bool joint_offset_startup_wrap_applied_ = false;
   double joint_offset_ = 0.0;
   double last_position_ = std::numeric_limits<double>::quiet_NaN();
 

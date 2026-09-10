@@ -82,6 +82,7 @@ extern const SingleWriteFunctionType ec_pdo_single_write_functions[];
 
 struct InterfaceData
 {
+  /** @brief When override_command is true, the default_value will always be used when writing instead of the command interface value */
   bool override_command = false;
   uint8_t mask = 255;
   double default_value = std::numeric_limits<double>::quiet_NaN();
@@ -157,12 +158,12 @@ public:
    */
   virtual double ec_read(uint8_t * domain_address, size_t i = 0) = 0;
 
-  /// @brief Perform an ec_read and update the state interface
+  /// @brief Perform an ec_read and update the state interface with the read value
   virtual void ec_read_to_interface(uint8_t * domain_address) = 0;
 
   virtual void ec_write(uint8_t * domain_address, double value, size_t i = 0) = 0;
 
-  /// @brief Perform an ec_write and update the command interface
+  /// @brief Perform an ec_write with the value from the command interface
   virtual void ec_write_from_interface(uint8_t * domain_address) = 0;
 
   /// @brief Update the state and command interfaces
