@@ -25,8 +25,9 @@
 #include <ctime>
 #include <filesystem>
 #include <sstream>
-#include <math.h>
 
+#define _USE_MATH_DEFINES // enable M_PI constant in cmath
+#include <cmath>
 
 namespace ethercat_generic_plugins
 {
