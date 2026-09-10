@@ -150,10 +150,10 @@ public:
   ScopedFifoPriority & operator=(const ScopedFifoPriority &) = delete;
 
 private:
-  pthread_t thread_;
+  const pthread_t thread_;
   sched_param saved_param_{};
   int saved_policy_ = 0;
-  int elevated_priority_ = 0;
+  const int elevated_priority_ = 0;
 };
 
 /// RAII helper that temporarily pins the calling thread to a single CPU core for the duration of a
@@ -233,9 +233,9 @@ public:
   ScopedCpuAffinity & operator=(const ScopedCpuAffinity &) = delete;
 
 private:
-  pthread_t thread_;
+  const pthread_t thread_;
   cpu_set_t saved_affinity_{};
-  int pinned_core_ = -1;
+  const int pinned_core_ = -1;
 };
 }  // namespace
 
