@@ -42,6 +42,8 @@ Set on the `<hardware>` element of the `ros2_control` system.
 `dc_sync0_shift_ns` — SYNC0 shift time in nanoseconds applied to DC slaves (default `0`).
 `activation_thread_priority` — SCHED_FIFO priority applied to the activation/bring-up loop only; `<= 0` (default) keeps normal scheduling.
 `activation_cpu_core` — CPU core the activation/bring-up loop is pinned to; `< 0` (default) leaves the CPU affinity unchanged.
+`shutdown_wind_down_timeout_s` — budget in seconds for the shutdown wind-down loop (default `1.0`); `<= 0` skips the wind-down.
+`activation_timeout_s` — budget in seconds for the activation/bring-up loop (default `10.0`); `<= 0` waits indefinitely.
 
 ### Real-time activation loop
 
@@ -59,6 +61,69 @@ loop is not preempted by IRQ threads. Both require `CAP_SYS_NICE` or the real-ti
 (`rtprio`); if the elevation fails it is logged as a warning and activation fails. Process memory
 locking is not handled here — enable the `controller_manager` `lock_memory` parameter (mlockall is
 process-wide).
+
+### Bounded, interruptible bring-up
+
+The bring-up loop in `on_activate()` waits for every module to report itself operational. It runs on
+whichever thread delivered the robot description, which for a `ros2_control_node` driven by the
+`/robot_description` topic is the executor thread: while the loop spins, the node answers no service
+and honours no signal. Unbounded, a bus that never reaches OP therefore cost a `SIGKILL`, a
+controller spawner timing out against `/controller_manager/list_controllers`, and about twenty
+seconds of teardown.
+
+The loop now gives up in two cases, and returns `ERROR` from `on_activate()` after releasing the
+master:
+
+- `rclcpp::ok()` goes false, so Ctrl-C is honoured while the bus is still coming up.
+- `activation_timeout_s` elapses. The message names the modules still waited on, by configured name
+  and alias/position.
+
+For reference, a healthy bring-up of a single DC drive takes about six seconds including the
+loop's initial one second delay, and that delay counts against the budget. A bus carrying more
+DC slaves needs a larger one.
+
+A slave whose identity reads `0x00000000:0x00000000` in `ethercat slaves` while stuck in `INIT` has
+not released its EEPROM to the master — its own CPU still owns register `0x0500` — so the master
+cannot match it against the configured vendor and product code and never configures it.
+`ethercat rescan` usually clears that.
+
+### Startup SDO failures
+
+The per-module startup SDOs carry the drive's speed limit, torque limits and control gains.
+A failed download is reported at `ERROR` with the `errno` from the transfer and the CoE abort code,
+and `configNetwork()` then refuses to continue rather than bringing the bus up on whatever the
+drives happen to hold.
+
+A zero abort code means the transfer never reached the drive's CoE layer — the slave is unreachable
+or its mailbox is not up — as opposed to the drive rejecting the object. The message says so,
+because the previous wording reported the abort code alone and so read as `Error: 0` for exactly
+the case where the drive was never spoken to.
+
+### Shutdown wind-down
+
+`on_deactivate()` releases the EtherCAT master, which stops the cyclic frames. A slave still in
+EtherCAT OP at that moment sees its process data disappear: a DC drive reports AL status `0x001A`
+("Synchronization error") and can latch a communication fault of its own. On some drives that latch
+survives the next master activation, so the drive walks its CiA-402 state machine all the way up to
+Operation Enabled on the following start-up while its cyclic motion task stays inhibited — it looks
+healthy, reports a clean status word, and silently ignores every setpoint.
+
+Before releasing the master, `on_deactivate()` therefore runs a blocking cyclic loop of its own, the
+mirror image of the bring-up loop in `on_activate()`. Each module is asked to wind down
+(`EcSlave::start_wind_down()`) and the loop keeps the process data flowing until every module
+reports `EcSlave::wind_down_complete()`, or until `shutdown_wind_down_timeout_s` expires. Modules
+with nothing to wind down report completion immediately, so the loop costs a single cycle for a bus
+that carries none. `ethercat_generic_cia402_drive` uses it to disable and then de-energise
+the drive, or to Quick Stop it where its slave config declares `quick_stop_supported`; see that
+package's README for the sequence and for why Quick Stop is opt-in.
+
+`activation_thread_priority` and `activation_cpu_core` apply to this loop too, for the same reason
+they apply to bring-up: a scheduling gap here stops the frames for longer than a DC slave's sync
+watchdog allows, which is the failure the wind-down exists to avoid.
+
+`on_shutdown()` runs the same wind-down, which only does anything when the component is finalized
+straight from ACTIVE; after `on_deactivate()` the master is already released and it returns
+immediately.
 
 ## Package Organization
 

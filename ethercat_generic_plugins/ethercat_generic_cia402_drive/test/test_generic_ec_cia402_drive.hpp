@@ -42,6 +42,15 @@ class FriendEcCiA402Drive : public ethercat_generic_plugins::EcCiA402Drive
   FRIEND_TEST(EcCiA402DriveTest, JointOffsetStartupWrapDisabledKeepsLegacyBehavior);
   FRIEND_TEST(EcCiA402DriveTest, JointOffsetStartupWrapEnabledAdjustsFirstSampleOnly);
   FRIEND_TEST(EcCiA402DriveTest, JointOffsetStartupWrapWaitsForSlaveData);
+  FRIEND_TEST(EcCiA402DriveTest, WindDownDisablesOperationFromOperationEnabled);
+  FRIEND_TEST(EcCiA402DriveTest, WindDownQuickStopsWhenTheDriveSupportsIt);
+  FRIEND_TEST(EcCiA402DriveTest, WindDownDisablesVoltageWhenTheQuickStopHoldElapses);
+  FRIEND_TEST(EcCiA402DriveTest, WindDownDisablesVoltageOnceTheDriveIsSwitchedOn);
+  FRIEND_TEST(EcCiA402DriveTest, WindDownCompletesWhenTheDriveParksInReadyToSwitchOn);
+  FRIEND_TEST(EcCiA402DriveTest, WindDownLeavesQuickStopActiveRatherThanHoldingIt);
+  FRIEND_TEST(EcCiA402DriveTest, WindDownCompletesOnceTheDriveIsDeEnergised);
+  FRIEND_TEST(EcCiA402DriveTest, WindDownHoldsTheLastReadPositionInCsp);
+  FRIEND_TEST(EcCiA402DriveTest, WindDownCompletesImmediatelyWhenNotOperational);
 };
 
 class EcCiA402DriveTest : public ::testing::Test

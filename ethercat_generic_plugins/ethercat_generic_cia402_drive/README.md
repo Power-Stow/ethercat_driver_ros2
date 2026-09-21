@@ -5,6 +5,67 @@
 `ethercat_generic_cia402_drive` provides a generic CiA402 EtherCAT slave plugin for `ethercat_driver_ros2`.
 It maps configured RPDO/TPDO channels to ros2_control interfaces and handles CiA402 state transitions.
 
+## Shutdown Wind-Down
+
+When `ethercat_driver` deactivates, it asks every module to wind down while the cyclic exchange is
+still running (`EcSlave::start_wind_down()`). This plugin uses that window to take the drive out of
+Operation Enabled before the frames stop, because a drive that loses its process data while still
+enabled reports AL status `0x001A` ("Synchronization error") and may latch a communication fault
+that survives into the next start-up.
+
+The control word is driven from the observed CiA-402 state, and the stop it uses depends on whether
+the drive declares `quick_stop_supported` in its slave config:
+
+| State | `quick_stop_supported: false` (default) | `quick_stop_supported: true` |
+| ----- | --------------------------------------- | ---------------------------- |
+| Operation Enabled | Disable Operation (`0x0007`) | Quick Stop (`0x000B`) |
+| Quick Stop Active | Disable Voltage (`0x0000`) | Quick Stop, then Disable Voltage once the ramp budget is spent |
+| anything else | Disable Voltage (`0x0000`), wind-down complete | Disable Voltage (`0x0000`), wind-down complete |
+
+The wind-down reports itself complete as soon as the drive function is disabled, which is every
+state except Operation Enabled and Quick Stop Active. Disable Voltage still goes out on that cycle,
+so the drive carries the command down to Switch On Disabled on its own once the frames stop.
+
+Waiting to *observe* Switch On Disabled would be stricter but wrong in practice: a drive can leave
+Operation Enabled within a few cycles and then park in Ready to Switch On while its DC bus is live,
+so the caller would spend its whole `shutdown_wind_down_timeout_s` waiting for a transition the
+drive never makes, and warn about a slave that is already de-energised.
+
+Half of the driver's `shutdown_wind_down_timeout_s` budget is given to the quick stop ramp; the
+remainder is left for Disable Voltage to be commanded and take effect. Drives whose quick stop
+option code (`0x605A`) takes them to Switch On Disabled leave Quick Stop Active on their own and
+finish early; the ones configured to hold position there are disabled once the budget is spent.
+
+### `quick_stop_supported`
+
+Quick Stop is the better shutdown where the drive implements it: it decelerates on the quick stop
+ramp (`0x6085`) instead of dropping the power stage and leaving the axis to coast or to its brake.
+It is opt-in per drive, and off by default, because a drive that does not implement it can respond
+destructively.
+
+This is not theoretical. A drive whose datasheet listed Quick Stop as not supported, and which had
+neither `0x605A` nor `0x6085` configured, answered a Quick Stop from Operation Enabled by clearing
+status word bit 12 (target position ignored), abandoning the commanded position and
+**accelerating** the axis to roughly twice its commanded velocity under its own torque. It held it
+there for a few hundred milliseconds, building a large following error, until it dropped out of
+Operation Enabled by itself. The axis only stopped once the wind-down commanded Disable Voltage
+and the brake engaged.
+
+Before setting it to `true` on a drive, confirm the datasheet supports the function, that `0x605A`
+and `0x6085` are configured, and verify the behaviour under motion on a test rig.
+
+### While the wind-down runs
+
+- the wind-down owns the control word, whatever `auto_state_transitions` is set to, so neither the
+  automatic state transitions nor a fault reset can take the drive back up to Operation Enabled,
+- every other command channel falls back to its configured default — zero velocity, zero torque and
+  the last read position — so a setpoint left behind by a controller that has already stopped is
+  not replayed into a drive that is being brought down,
+- a standing fault is deliberately not reset: clearing it on the way out would hide it from the
+  next start-up.
+
+A drive that never became operational reports the wind-down complete immediately.
+
 ## Joint Offset Startup Wrap
 
 Some absolute encoders only report their power-up angle within a principal interval such as `[-pi, pi]`, even though

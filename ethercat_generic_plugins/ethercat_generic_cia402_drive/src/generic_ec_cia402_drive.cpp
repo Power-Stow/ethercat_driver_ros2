@@ -35,6 +35,27 @@ namespace ethercat_generic_plugins
 namespace
 {
 
+/// CiA-402 Disable Operation: Switch On, Enable Voltage and Quick Stop set, Enable Operation
+/// cleared. Takes the drive from Operation Enabled to Switched On, dropping the power stage so the
+/// axis is held by its brake. This is the wind-down's default stop, because it needs nothing of the
+/// drive beyond the CiA-402 state machine itself.
+constexpr uint16_t CONTROL_WORD_DISABLE_OPERATION = 0b00000111;
+
+/// CiA-402 Quick Stop: Enable Voltage set, Quick Stop cleared. The drive decelerates on its quick
+/// stop ramp (0x6085) and then follows its quick stop option code (0x605A), which either drops it
+/// into Switch On Disabled or holds it in Quick Stop Active.
+///
+/// Only sent to drives whose slave config sets `quick_stop_supported`. A drive that does not
+/// implement Quick Stop can respond to it destructively: one drive whose datasheet listed the
+/// function as not supported answered a Quick Stop from Operation Enabled by clearing status word
+/// bit 12, abandoning the commanded position and accelerating the axis to roughly twice its
+/// commanded velocity under its own torque, until it dropped out of Operation Enabled by itself.
+constexpr uint16_t CONTROL_WORD_QUICK_STOP = 0b00001011;
+
+/// CiA-402 Disable Voltage: every command bit cleared, which forces Switch On Disabled from any
+/// energised state.
+constexpr uint16_t CONTROL_WORD_DISABLE_VOLTAGE = 0b00000000;
+
 double raw_value_from_channel(const ethercat_interface::EcPdoChannelManager & channel)
 {
   const auto & d = channel.data();
@@ -252,7 +273,13 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
   ethercat_interface::EcPdoSingleInterfaceChannelManager & channel(*channel_ptr);
   // Special case: ControlWord
   if (channel.index == CiA402D_RPDO_CONTROLWORD) {
-    if (is_operational_) {
+    if (is_operational_ && wind_down_requested_) {
+      // The wind-down owns the control word: a fault reset or an automatic transition back up to
+      // Operation Enabled would undo the very thing it is trying to achieve, and a control word
+      // left behind by a controller that has already stopped must not be replayed either.
+      channel.default_value = wind_down_transition(state_);
+      channel.override_command = true;
+    } else if (is_operational_) {
       if (fault_reset_command_interface_index_ >= 0) {
         if (command_interface_ptr_->at(fault_reset_command_interface_index_) == 0) {
           last_fault_reset_command_ = false;
@@ -280,10 +307,13 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
       channel.default_value =
         channel.factor * (last_position_ - joint_offset_) + channel.offset;
     }
-    channel.override_command =
-      (mode_of_operation_display_ != ModeOfOperation::MODE_CYCLIC_SYNC_POSITION) ? true : false;
+    // The wind-down holds the last read position, so a setpoint left behind by a controller that
+    // has already stopped cannot be replayed into a drive that is being brought down.
+    const bool follow_position_command = !wind_down_requested_ &&
+      mode_of_operation_display_ == ModeOfOperation::MODE_CYCLIC_SYNC_POSITION;
+    channel.override_command = !follow_position_command;
 
-    if (mode_of_operation_display_ == ModeOfOperation::MODE_CYCLIC_SYNC_POSITION) {
+    if (follow_position_command) {
       channel.ec_read_to_interface(domain_address);
 
       if (joint_offset_startup_wrap_enabled_ && !joint_offset_startup_wrap_applied_) {
@@ -313,6 +343,15 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
     if (mode_of_operation_ >= 0 && mode_of_operation_ <= 10) {
       channel.default_value = mode_of_operation_;
     }
+  }
+
+  // Everything else the drive is commanded with falls back to its configured default while the
+  // wind-down runs: zero velocity, zero torque, the mode of operation the drive is already in. The
+  // control word is excluded because the wind-down drives it itself, just above.
+  if (wind_down_requested_ && channel.pdo_type == ethercat_interface::RPDO &&
+    channel.index != CiA402D_RPDO_CONTROLWORD)
+  {
+    channel.override_command = true;
   }
 
   if (channel.index == CiA402D_TPDO_POSITION) {
@@ -384,6 +423,9 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
   // CHECK FOR STATE CHANGE
   if (entry_idx == domain_map_.size() - 1) {  // if last entry in domain
     updateState();
+    if (wind_down_requested_ && !wind_down_complete_) {
+      ++wind_down_cycles_;
+    }
     dump_cycle_csv_row();
   }
 }
@@ -488,6 +530,9 @@ bool EcCiA402Drive::setup_from_config(YAML::Node drive_config)
   if (drive_config["auto_state_transitions"]) {
     auto_state_transitions_ = drive_config["auto_state_transitions"].as<bool>();
   }
+  if (drive_config["quick_stop_supported"]) {
+    quick_stop_supported_ = drive_config["quick_stop_supported"].as<bool>();
+  }
   return true;
 }
 
@@ -569,6 +614,62 @@ uint16_t EcCiA402Drive::transition(DeviceState state, uint16_t control_word)
       break;
   }
   return control_word;
+}
+
+void EcCiA402Drive::start_wind_down(double cycle_period_s, double timeout_s)
+{
+  wind_down_requested_ = true;
+  wind_down_cycles_ = 0;
+  wind_down_complete_ = false;
+
+  // Half of the budget is spent letting the drive decelerate on its quick stop ramp. Drives whose
+  // quick stop option code takes them to Switch On Disabled finish well inside that and end the
+  // wind-down early; the ones configured to hold position in Quick Stop Active never would, so the
+  // remaining half is left for Disable Voltage to be commanded and take effect. Unused when the
+  // drive does not support Quick Stop, since that path never enters Quick Stop Active.
+  quick_stop_hold_cycles_ = (cycle_period_s > 0.0)
+    ? static_cast<uint32_t>(0.5 * timeout_s / cycle_period_s)
+    : 0;
+
+  RCLCPP_INFO(
+    rclcpp::get_logger("EthercatDriver"),
+    "EcCiA402Drive: winding down from %s using %s [slave pos: %u]",
+    DEVICE_STATE_STR.at(state_).c_str(),
+    quick_stop_supported_ ? "Quick Stop" : "Disable Operation",
+    position_);
+}
+
+bool EcCiA402Drive::wind_down_complete()
+{
+  // A drive that is not operational is either already de-energised or no longer reachable over
+  // process data: either way the wind-down has nothing left to do and must not hold up the caller.
+  return wind_down_complete_ || !is_operational_;
+}
+
+/** returns the control word that walks the device down towards Switch On Disabled */
+uint16_t EcCiA402Drive::wind_down_transition(DeviceState state)
+{
+  switch (state) {
+    case STATE_OPERATION_ENABLED:
+      // Quick Stop decelerates on the drive's own ramp and is the better stop where the drive
+      // implements it; disabling drops the power stage and leaves the axis to its brake.
+      return quick_stop_supported_ ? CONTROL_WORD_QUICK_STOP : CONTROL_WORD_DISABLE_OPERATION;
+    case STATE_QUICK_STOP_ACTIVE:
+      // Still decelerating under power, so this is not somewhere to leave the drive.
+      if (quick_stop_supported_ && wind_down_cycles_ < quick_stop_hold_cycles_) {
+        return CONTROL_WORD_QUICK_STOP;
+      }
+      return CONTROL_WORD_DISABLE_VOLTAGE;
+    default:
+      // Every other state has the drive function disabled, which is the whole point of winding
+      // down before the frames stop. Disable Voltage still goes out on this cycle, so the drive
+      // carries that command down to Switch On Disabled by itself; waiting to observe it would
+      // cost the caller its entire timeout on a drive that parks in Ready to Switch On while its
+      // DC bus is live, which some drives do. A standing fault is deliberately not reset:
+      // clearing it on the way out would hide it from the next start-up.
+      wind_down_complete_ = true;
+      return CONTROL_WORD_DISABLE_VOLTAGE;
+  }
 }
 
 }  // namespace ethercat_generic_plugins

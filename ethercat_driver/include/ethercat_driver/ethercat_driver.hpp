@@ -91,6 +91,27 @@ protected:
 
   CallbackReturn configNetwork();
 
+  /** @brief Command every module into its safe, de-energised state with process data still running.
+   *
+   * Runs the cyclic exchange from the calling thread, the way `on_activate()` does for bring-up, so
+   * that a CiA-402 drive can be walked down to Switch On Disabled before the frames stop. Drives
+   * that lose their cyclic data while still in Operation Enabled report a synchronization error and
+   * can latch a communication fault that survives into the next start-up.
+   *
+   * Returns once every module reports the wind-down complete or `shutdown_wind_down_timeout_s_`
+   * has elapsed, whichever comes first.
+   */
+  void windDownSlaves();
+
+  /** @brief Name the modules that have not reached their operational state yet.
+   *
+   * Used for the activation timeout message, so the log says which drive the bus is waiting on
+   * rather than only that it timed out.
+   *
+   * @return Comma separated `name (alias N position N)` entries, or `none` if every module is up.
+   */
+  std::string pendingModuleDescription();
+
   /** @brief Load transfer config YAML file
    * One use case is to load transfers for FailSafe Over EtherCAT Safety
    * @param[out] node YAML node containing the transfer configuration root
@@ -143,6 +164,10 @@ protected:
   int activation_thread_priority_ = 0;
   /** CPU core the activation/bring-up loop is pinned to; < 0 leaves the CPU affinity unchanged. */
   int activation_cpu_core_ = -1;
+  /** Budget in seconds for the shutdown wind-down loop; <= 0 skips the wind-down entirely. */
+  double shutdown_wind_down_timeout_s_ = 1.0;
+  /** Budget in seconds for the activation/bring-up loop; <= 0 waits indefinitely. */
+  double activation_timeout_s_ = 10.0;
 
   std::shared_ptr<ethercat_interface::EcMaster> master_;
   std::mutex ec_mutex_;

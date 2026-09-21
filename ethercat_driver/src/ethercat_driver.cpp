@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <limits>
 #include <memory>
 #include <regex>
@@ -46,6 +47,15 @@ void cleanup_master(
     master->shutdown();
     master.reset();
   }
+}
+
+/// Seconds elapsed on CLOCK_MONOTONIC since @p since.
+double monotonic_elapsed_s(const struct timespec & since)
+{
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return static_cast<double>(now.tv_sec - since.tv_sec) +
+         static_cast<double>(now.tv_nsec - since.tv_nsec) * 1e-9;
 }
 
 /// Logs @p message as a warning and then throws it as a std::runtime_error.
@@ -842,6 +852,34 @@ CallbackReturn EthercatDriver::configNetwork()
     }
   }
 
+  // Budget for the activation/bring-up loop (see on_activate()).
+  activation_timeout_s_ = 10.0;
+  if (info_.hardware_parameters.find("activation_timeout_s") != info_.hardware_parameters.end()) {
+    try {
+      activation_timeout_s_ = std::stod(info_.hardware_parameters["activation_timeout_s"]);
+    } catch (std::exception & e) {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"), "Invalid activation_timeout_s (%s)!", e.what());
+      return CallbackReturn::ERROR;
+    }
+  }
+
+  // Budget for the shutdown wind-down loop (see windDownSlaves()).
+  shutdown_wind_down_timeout_s_ = 1.0;
+  if (info_.hardware_parameters.find("shutdown_wind_down_timeout_s") !=
+    info_.hardware_parameters.end())
+  {
+    try {
+      shutdown_wind_down_timeout_s_ =
+        std::stod(info_.hardware_parameters["shutdown_wind_down_timeout_s"]);
+    } catch (std::exception & e) {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"),
+        "Invalid shutdown_wind_down_timeout_s (%s)!", e.what());
+      return CallbackReturn::ERROR;
+    }
+  }
+
   // start EC and wait until state operative
 
   master_->setCtrlFrequency(control_frequency_);
@@ -859,9 +897,12 @@ CallbackReturn EthercatDriver::configNetwork()
   }
 
   // configure SDO
+  size_t failed_sdo_count = 0;
   for (auto i = 0ul; i < ec_modules_.size(); i++) {
     for (auto & sdo : ec_modules_[i]->sdo_config) {
-      uint32_t abort_code;
+      // Only written when the transfer reached the drive's CoE layer and was aborted there, so it
+      // has to start at zero for the "never reached the drive" case to be distinguishable.
+      uint32_t abort_code = 0;
       RCLCPP_INFO(
         rclcpp::get_logger("EthercatDriver"),
         "Downloading config SDO for module '%s' at alias %u position %u: index 0x%x subindex 0x%x",
@@ -875,15 +916,35 @@ CallbackReturn EthercatDriver::configNetwork()
         sdo,
         &abort_code);
       if (ret) {
-        RCLCPP_INFO(
+        ++failed_sdo_count;
+        RCLCPP_ERROR(
           rclcpp::get_logger("EthercatDriver"),
-          "Failed to download config SDO for module '%s' at alias %u position %u with Error: %d",
+          "Failed to download config SDO index 0x%x subindex 0x%x for module '%s' at alias %u "
+          "position %u: %s. CoE abort code 0x%08x%s",
+          sdo.index,
+          sdo.sub_index,
           ec_module_parameters_[i].at("name").c_str(),
           ec_modules_[i]->alias_,
           ec_modules_[i]->position_,
-          abort_code);
+          std::strerror(ret < 0 ? -ret : ret),
+          abort_code,
+          abort_code == 0 ?
+          " (zero: the transfer never reached the drive's CoE layer, so the slave is unreachable "
+          "or its mailbox is not up - check 'ethercat slaves' for its state and identity)" : "");
       }
     }
+  }
+
+  if (failed_sdo_count > 0) {
+    // The startup SDOs carry the drive's speed limit, torque limits and control gains. Coming up
+    // without them would silently run the axis on whatever the drive happens to hold, so this is
+    // refused rather than warned about.
+    RCLCPP_FATAL(
+      rclcpp::get_logger("EthercatDriver"),
+      "%zu startup config SDO download(s) failed; refusing to bring the bus up without the limits "
+      "and gains they carry.",
+      failed_sdo_count);
+    return CallbackReturn::ERROR;
   }
 
   return CallbackReturn::SUCCESS;
@@ -948,9 +1009,15 @@ CallbackReturn EthercatDriver::on_activate(
   // start after one second
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
+  // Timed from here rather than from the first cycle, so the initial one second delay counts
+  // against activation_timeout_s instead of being added to it.
+  const struct timespec activation_start = t;
   t.tv_sec++;
 
+  const uint32_t interval_ns = master_->getInterval();
+
   bool running = true;
+  bool operational = false;
   while (running) {
     // wait until next shot
     clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
@@ -965,13 +1032,41 @@ CallbackReturn EthercatDriver::on_activate(
     }
     if (isAllInit) {
       running = false;
+      operational = true;
+    } else if (!rclcpp::ok()) {
+      // This loop runs on the thread that delivered the robot description, so while it spins the
+      // node answers no service and honours no signal: a bus that never reaches OP used to leave
+      // ros2_control_node to be SIGKILLed. Give up as soon as shutdown is requested.
+      RCLCPP_WARN(
+        rclcpp::get_logger("EthercatDriver"),
+        "Shutdown requested while waiting for the EtherCAT bus to become operational.");
+      running = false;
+    } else if (activation_timeout_s_ > 0.0 &&
+      monotonic_elapsed_s(activation_start) >= activation_timeout_s_)
+    {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("EthercatDriver"),
+        "EtherCAT bus did not become operational within %.1f s. Still waiting on: %s. Check "
+        "'ethercat slaves': a slave stuck in INIT whose identity reads 0x00000000 has not released "
+        "its EEPROM to the master, which 'ethercat rescan' usually clears.",
+        activation_timeout_s_,
+        pendingModuleDescription().c_str());
+      running = false;
     }
     // calculate next shot. carry over nanoseconds into microseconds.
-    t.tv_nsec += master_->getInterval();
+    t.tv_nsec += interval_ns;
     while (t.tv_nsec >= 1000000000) {
       t.tv_nsec -= 1000000000;
       t.tv_sec++;
     }
+  }
+
+  if (!operational) {
+    if (master_) {
+      master_->shutdown();
+      master_.reset();
+    }
+    return CallbackReturn::ERROR;
   }
 
   RCLCPP_INFO(
@@ -982,13 +1077,121 @@ CallbackReturn EthercatDriver::on_activate(
   return CallbackReturn::SUCCESS;
 }
 
+std::string EthercatDriver::pendingModuleDescription()
+{
+  std::string pending;
+  for (size_t i = 0; i < ec_modules_.size(); ++i) {
+    if (ec_modules_[i]->initialized()) {
+      continue;
+    }
+
+    std::string name = "<unnamed>";
+    if (i < ec_module_parameters_.size()) {
+      const auto name_it = ec_module_parameters_[i].find("name");
+      if (name_it != ec_module_parameters_[i].end()) {
+        name = name_it->second;
+      }
+    }
+
+    if (!pending.empty()) {
+      pending += ", ";
+    }
+    pending += name + " (alias " + std::to_string(ec_modules_[i]->alias_) +
+      " position " + std::to_string(ec_modules_[i]->position_) + ")";
+  }
+
+  return pending.empty() ? "none" : pending;
+}
+
+void EthercatDriver::windDownSlaves()
+{
+  if (!activated_ || !master_ || !master_->isValid()) {
+    return;
+  }
+
+  const uint32_t interval_ns = master_->getInterval();
+  if (interval_ns == 0 || shutdown_wind_down_timeout_s_ <= 0.0) {
+    return;
+  }
+
+  const double cycle_period_s = static_cast<double>(interval_ns) * 1e-9;
+  const uint64_t max_cycles =
+    static_cast<uint64_t>(shutdown_wind_down_timeout_s_ / cycle_period_s);
+
+  RCLCPP_INFO(
+    rclcpp::get_logger("EthercatDriver"),
+    "Winding down %zu EtherCAT module(s), at most %.3f s ...",
+    ec_modules_.size(), shutdown_wind_down_timeout_s_);
+
+  for (auto & module : ec_modules_) {
+    module->start_wind_down(cycle_period_s, shutdown_wind_down_timeout_s_);
+  }
+
+  // The bring-up loop's real-time treatment applies here for the same reason: a scheduling gap
+  // stops the cyclic frames for longer than a DC slave's sync watchdog allows, which is exactly the
+  // synchronization error this loop exists to avoid. Constructed priority-first so destruction
+  // restores the affinity before the scheduling policy.
+  const std::unique_ptr<ScopedFifoPriority> wind_down_priority =
+    activation_thread_priority_ > 0 ?
+    std::make_unique<ScopedFifoPriority>(activation_thread_priority_) : nullptr;
+  const std::unique_ptr<ScopedCpuAffinity> wind_down_affinity =
+    activation_cpu_core_ >= 0 ? std::make_unique<ScopedCpuAffinity>(activation_cpu_core_) : nullptr;
+
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+
+  bool complete = false;
+  uint64_t cycle = 0;
+  while (!complete && cycle < max_cycles) {
+    // calculate next shot. carry over nanoseconds into seconds.
+    t.tv_nsec += interval_ns;
+    while (t.tv_nsec >= 1000000000) {
+      t.tv_nsec -= 1000000000;
+      t.tv_sec++;
+    }
+    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
+
+    master_->update();
+
+    complete = true;
+    for (auto & module : ec_modules_) {
+      complete = complete && module->wind_down_complete();
+    }
+    ++cycle;
+  }
+
+  if (complete) {
+    RCLCPP_INFO(
+      rclcpp::get_logger("EthercatDriver"),
+      "Wind-down complete after %.3f s.",
+      static_cast<double>(cycle) * cycle_period_s);
+  } else {
+    RCLCPP_WARN(
+      rclcpp::get_logger("EthercatDriver"),
+      "Wind-down did not complete within %.3f s. The master is released with at least one slave "
+      "still energised, which can leave that slave reporting a synchronization error.",
+      shutdown_wind_down_timeout_s_);
+  }
+}
+
 CallbackReturn EthercatDriver::on_deactivate(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {
   const std::lock_guard<std::mutex> lock(ec_mutex_);
-  activated_ = false;
 
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Stopping ...please wait...");
+
+  // A wind-down that throws must not cost us the master release: the slaves are worse off holding
+  // an activated master than they are having skipped the wind-down.
+  try {
+    windDownSlaves();
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(
+      rclcpp::get_logger("EthercatDriver"),
+      "EtherCAT wind-down failed: %s. Releasing the master anyway.", e.what());
+  }
+
+  activated_ = false;
 
   cleanup_master(master_, activated_);
 
@@ -1024,6 +1227,16 @@ CallbackReturn EthercatDriver::on_shutdown(
   const std::lock_guard lock(ec_mutex_);
 
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Shutdown cleanup ...please wait...");
+
+  // Only does anything when the component is finalized straight from ACTIVE; after on_deactivate()
+  // the master is already released and this returns immediately.
+  try {
+    windDownSlaves();
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(
+      rclcpp::get_logger("EthercatDriver"),
+      "EtherCAT wind-down failed: %s. Releasing the master anyway.", e.what());
+  }
 
   cleanup_master(master_, activated_);
   cleanupPluginsForShutdown();

@@ -50,6 +50,16 @@ public:
     std::vector<double> * state_interface,
     std::vector<double> * command_interface);
 
+  /** Start walking the CiA-402 state machine down to Switch On Disabled.
+   *  Drives whose slave config sets `quick_stop_supported` are commanded Quick Stop, so they
+   *  decelerate on their quick stop ramp; every other drive is disabled, dropping the power stage
+   *  so the axis is held by its brake. While the wind-down runs, every command channel but the
+   *  control word falls back to its configured default. */
+  virtual void start_wind_down(double cycle_period_s, double timeout_s);
+
+  /** True once the drive has reached a de-energised state, or was never operational. */
+  virtual bool wind_down_complete();
+
   /// @brief Setup CSV dumping internals from plugin parameters.
   void setup_csv_dump();
 
@@ -78,6 +88,11 @@ protected:
   double last_raw_position_ = std::numeric_limits<double>::quiet_NaN();
   bool joint_offset_startup_wrap_enabled_ = false;
   bool joint_offset_startup_wrap_applied_ = false;
+  bool wind_down_requested_ = false;
+  bool wind_down_complete_ = true;
+  bool quick_stop_supported_ = false;
+  uint32_t wind_down_cycles_ = 0;
+  uint32_t quick_stop_hold_cycles_ = 0;
   double joint_offset_ = 0.0;
   double last_position_ = std::numeric_limits<double>::quiet_NaN();
 
@@ -95,6 +110,8 @@ protected:
   DeviceState deviceState(uint16_t status_word);
   /** returns the control word that will take device from state to next desired state */
   uint16_t transition(DeviceState state, uint16_t control_word);
+  /** returns the control word that walks the device down towards Switch On Disabled */
+  uint16_t wind_down_transition(DeviceState state);
   /** set up of the drive configuration from yaml node*/
   bool setup_from_config(YAML::Node drive_config);
   /** set up of the drive configuration from yaml file*/
