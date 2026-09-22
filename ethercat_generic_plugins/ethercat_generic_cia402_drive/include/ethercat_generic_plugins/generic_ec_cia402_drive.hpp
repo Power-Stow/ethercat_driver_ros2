@@ -91,6 +91,14 @@ protected:
   DeviceState state_ = STATE_START;
   bool initialized_ = false;
   bool auto_fault_reset_ = false;
+  /** Clear a fault the drive came up in, once, on the way to Operation Enabled for the first time.
+   *  Separate from auto_fault_reset, which clears every fault for as long as the driver runs: a drive
+   *  that was left in Fault by a previous session has nothing to do with the session about to start, and
+   *  with auto_fault_reset off there is nothing else to clear it. No controller exists yet during
+   *  bring-up, so the command interface cannot be used either. */
+  bool reset_fault_on_startup_ = true;
+  bool operation_enabled_reached_ = false;
+  bool startup_fault_reset_logged_ = false;
   bool auto_state_transitions_ = true;
   bool fault_reset_ = false;
   int fault_reset_command_interface_index_ = -1;

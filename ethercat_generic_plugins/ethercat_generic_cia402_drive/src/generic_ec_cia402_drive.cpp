@@ -117,6 +117,10 @@ void EcCiA402Drive::updateState()
   }
 
   latch_fault_error_code();
+  if (state_ == STATE_OPERATION_ENABLED) {
+    // From here on a fault is this session's, so it latches and waits for a deliberate reset.
+    operation_enabled_reached_ = true;
+  }
 
   last_status_word_ = status_word_;
   last_state_ = state_;
@@ -360,7 +364,15 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
     }
     // The wind-down holds the last read position, so a setpoint left behind by a controller that
     // has already stopped cannot be replayed into a drive that is being brought down.
+    //
+    // A drive that is not in Operation Enabled is held the same way, and for the same reason one step
+    // earlier: while it is in Fault, or walking back up through Switch On Disabled after a reset, the
+    // axis is free and moves. Whatever setpoint the command interface holds was written before that and
+    // no longer describes where the axis is, so commanding it at the moment the power stage comes back
+    // steps the axis to it. Holding the last read position throughout means the drive re-enables onto
+    // the position it is actually at.
     const bool follow_position_command = !wind_down_requested_ &&
+      state_ == STATE_OPERATION_ENABLED &&
       mode_of_operation_display_ == ModeOfOperation::MODE_CYCLIC_SYNC_POSITION;
     channel.override_command = !follow_position_command;
 
@@ -397,12 +409,23 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
   }
 
   // Everything else the drive is commanded with falls back to its configured default while the
-  // wind-down runs: zero velocity, zero torque, the mode of operation the drive is already in. The
-  // control word is excluded because the wind-down drives it itself, just above.
-  if (wind_down_requested_ && channel.pdo_type == ethercat_interface::RPDO &&
-    channel.index != CiA402D_RPDO_CONTROLWORD)
+  // wind-down runs, and whenever the drive is not in Operation Enabled: zero velocity, zero torque, the
+  // mode of operation the drive is already in.
+  //
+  // Assigned every cycle rather than only set, because override_command lives on the channel and outlives
+  // the condition that raised it. Setting it on the way up, which every bring-up does before the drive
+  // first reaches Operation Enabled, and never clearing it pins the channel to its default for the rest
+  // of the session: the drive then ignores its velocity and torque commands for good.
+  //
+  // The control word is excluded because the state machine and the wind-down drive it themselves, just
+  // above, and pinning it would strand the drive wherever it happens to be. The target position is
+  // excluded because it assigns its own override from `follow_position_command`, which already carries
+  // both conditions.
+  if (channel.pdo_type == ethercat_interface::RPDO &&
+    channel.index != CiA402D_RPDO_CONTROLWORD &&
+    channel.index != CiA402D_RPDO_POSITION)
   {
-    channel.override_command = true;
+    channel.override_command = wind_down_requested_ || state_ != STATE_OPERATION_ENABLED;
   }
 
   if (channel.index == CiA402D_TPDO_POSITION) {
@@ -595,6 +618,10 @@ bool EcCiA402Drive::setupSlave(
   last_fault_error_code_ = 0;
   last_fault_status_word_ = 0;
   fault_error_code_logged_ = false;
+  // Re-armed per activation, so a deactivate/activate cycle clears a fault the same way a fresh start
+  // does rather than coming back up into one.
+  operation_enabled_reached_ = false;
+  startup_fault_reset_logged_ = false;
   publish_last_error_code();
 
   setup_csv_dump();
@@ -608,6 +635,9 @@ bool EcCiA402Drive::setup_from_config(YAML::Node drive_config)
   // additional configuration parameters for CiA402 Drives
   if (drive_config["auto_fault_reset"]) {
     auto_fault_reset_ = drive_config["auto_fault_reset"].as<bool>();
+  }
+  if (drive_config["reset_fault_on_startup"]) {
+    reset_fault_on_startup_ = drive_config["reset_fault_on_startup"].as<bool>();
   }
   if (drive_config["auto_state_transitions"]) {
     auto_state_transitions_ = drive_config["auto_state_transitions"].as<bool>();
@@ -686,10 +716,25 @@ uint16_t EcCiA402Drive::transition(DeviceState state, uint16_t control_word)
     case STATE_FAULT_REACTION_ACTIVE:     // -> STATE_FAULT (automatic)
       return control_word;
     case STATE_FAULT:                     // -> STATE_SWITCH_ON_DISABLED
-      if (auto_fault_reset_ || fault_reset_) {
-        fault_reset_ = false;
-        return (control_word & 0b11111111) | 0b10000000;     // automatic reset
-      } else {
+      {
+        // A drive that comes up in Fault is cleared once regardless, because the fault belongs to a
+        // session that has ended and nothing else can clear it before Operation Enabled is first
+        // reached: with auto_fault_reset off the reset comes from a command interface, and no
+        // controller is claiming one yet.
+        const bool startup_reset = reset_fault_on_startup_ && !operation_enabled_reached_;
+        if (startup_reset && !startup_fault_reset_logged_) {
+          RCLCPP_WARN(
+            rclcpp::get_logger("EthercatDriver"),
+            "EcCiA402Drive: the drive came up in Fault with error code 0x%04x; clearing it once on the "
+            "way to Operation Enabled [slave pos: %u]",
+            last_fault_error_code_,
+            position_);
+          startup_fault_reset_logged_ = true;
+        }
+        if (auto_fault_reset_ || fault_reset_ || startup_reset) {
+          fault_reset_ = false;
+          return (control_word & 0b11111111) | 0b10000000;     // automatic reset
+        }
         return control_word;
       }
     default:

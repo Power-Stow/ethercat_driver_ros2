@@ -70,6 +70,22 @@ public:
   CallbackReturn on_error(const rclcpp_lifecycle::State & previous_state) override;
 
   ETHERCAT_DRIVER_PUBLIC
+  /// Neutralise the command interfaces a controller is giving up, so nothing stale is left behind.
+  /**
+   * A command interface keeps its last value when the controller writing it is deactivated: nothing in
+   * ros2_control clears it, and this driver goes on writing it to the drive every cycle. That is a
+   * setpoint from before the switch being commanded indefinitely afterwards, and it is how a drive comes
+   * back from a fault reset and steps the axis to wherever it was told to go before the fault.
+   *
+   * Position interfaces are released to NaN, which the channel managers turn into the configured default,
+   * and for a CiA-402 position channel that default is the last read position, so the drive holds where
+   * it is. Velocity and effort are released to zero. Anything else is left alone, since only the
+   * interfaces that move an axis are unsafe to leave stale.
+   */
+  hardware_interface::return_type perform_command_mode_switch(
+    const std::vector<std::string> & start_interfaces,
+    const std::vector<std::string> & stop_interfaces) override;
+
   hardware_interface::return_type read(const rclcpp::Time &, const rclcpp::Duration &) override;
 
   ETHERCAT_DRIVER_PUBLIC
@@ -186,6 +202,9 @@ protected:
 
   /** Empty interfaces */
   std::vector<double> empty_interface_;
+
+  /// Release one command interface, named "<joint>/<interface>", to a value that commands no motion.
+  void release_joint_command(const std::string & interface_name);
 };
 }  // namespace ethercat_driver
 

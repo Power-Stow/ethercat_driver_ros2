@@ -1227,6 +1227,50 @@ CallbackReturn EthercatDriver::on_deactivate(
   return CallbackReturn::SUCCESS;
 }
 
+hardware_interface::return_type EthercatDriver::perform_command_mode_switch(
+  const std::vector<std::string> & /*start_interfaces*/,
+  const std::vector<std::string> & stop_interfaces)
+{
+  // Starting interfaces are left alone: a controller that has just claimed one writes it before the next
+  // cycle reaches the bus, and pre-empting that would overwrite its first command.
+  for (const auto & interface_name : stop_interfaces) {
+    release_joint_command(interface_name);
+  }
+  return hardware_interface::return_type::OK;
+}
+
+void EthercatDriver::release_joint_command(const std::string & interface_name)
+{
+  for (auto j = 0ul; j < info_.joints.size(); j++) {
+    for (auto i = 0ul; i < info_.joints[j].command_interfaces.size(); i++) {
+      const std::string & name = info_.joints[j].command_interfaces[i].name;
+      if (interface_name != info_.joints[j].name + "/" + name) {
+        continue;
+      }
+
+      if (name == hardware_interface::HW_IF_POSITION) {
+        // The channel managers write their configured default in place of a NaN, and a CiA-402 position
+        // channel's default is the last read position, so this is "stay where you are".
+        hw_joint_commands_[j][i] = std::numeric_limits<double>::quiet_NaN();
+      } else if (name == hardware_interface::HW_IF_VELOCITY || // NOLINT
+        name == hardware_interface::HW_IF_EFFORT)
+      {
+        hw_joint_commands_[j][i] = 0.0;
+      } else {
+        // The control word, the mode of operation and the fault reset are not motion, and a drive that
+        // is between controllers should keep the mode and the state machine it already had.
+        return;
+      }
+
+      RCLCPP_INFO(
+        rclcpp::get_logger("EthercatDriver"),
+        "Released command interface '%s' to a value that commands no motion.",
+        interface_name.c_str());
+      return;
+    }
+  }
+}
+
 hardware_interface::return_type EthercatDriver::read(
   const rclcpp::Time & /*time*/,
   const rclcpp::Duration & /*period*/)
