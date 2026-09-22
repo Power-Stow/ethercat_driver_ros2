@@ -618,6 +618,18 @@ uint16_t EcCiA402Drive::transition(DeviceState state, uint16_t control_word)
 
 void EcCiA402Drive::start_wind_down(double cycle_period_s, double timeout_s)
 {
+  // Taken before the first wind-down cycle forces them all true, because override_command lives
+  // on the channel rather than on the wind-down: without this the drive would come back up with
+  // every command channel still pinned to its default. Cast the way processData() does, since
+  // that is the view through which the wind-down sets the flag in the first place.
+  pre_wind_down_override_command_.clear();
+  pre_wind_down_override_command_.reserve(pdo_channels_info_.size());
+  for (auto * channel : pdo_channels_info_) {
+    auto * single_channel =
+      static_cast<ethercat_interface::EcPdoSingleInterfaceChannelManager *>(channel);
+    pre_wind_down_override_command_.push_back(single_channel->override_command);
+  }
+
   wind_down_requested_ = true;
   wind_down_cycles_ = 0;
   wind_down_complete_ = false;
@@ -644,6 +656,34 @@ bool EcCiA402Drive::wind_down_complete()
   // A drive that is not operational is either already de-energised or no longer reachable over
   // process data: either way the wind-down has nothing left to do and must not hold up the caller.
   return wind_down_complete_ || !is_operational_;
+}
+
+void EcCiA402Drive::reset_wind_down()
+{
+  if (!wind_down_requested_) {
+    return;
+  }
+
+  // Put every channel back the way the slave config had it. Anything the wind-down did not
+  // snapshot is left alone, so a channel added since is not silently re-configured here.
+  const size_t restored =
+    std::min(pdo_channels_info_.size(), pre_wind_down_override_command_.size());
+  for (size_t i = 0; i < restored; ++i) {
+    auto * single_channel =
+      static_cast<ethercat_interface::EcPdoSingleInterfaceChannelManager *>(pdo_channels_info_[i]);
+    single_channel->override_command = pre_wind_down_override_command_[i];
+  }
+  pre_wind_down_override_command_.clear();
+
+  wind_down_requested_ = false;
+  wind_down_complete_ = true;
+  wind_down_cycles_ = 0;
+  quick_stop_hold_cycles_ = 0;
+
+  RCLCPP_INFO(
+    rclcpp::get_logger("EthercatDriver"),
+    "EcCiA402Drive: wind-down state cleared, the drive can be commanded again [slave pos: %u]",
+    position_);
 }
 
 /** returns the control word that walks the device down towards Switch On Disabled */

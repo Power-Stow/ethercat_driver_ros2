@@ -960,6 +960,14 @@ CallbackReturn EthercatDriver::on_activate(
   }
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Starting ...please wait...");
 
+  // The modules are created once, in on_init(), so they survive a deactivate/activate cycle with
+  // whatever state the last wind-down left on them. A wind-down still in force owns the control
+  // word and pins every other command channel to its default, which would keep a drive out of
+  // Operation Enabled for good.
+  for (auto & module : ec_modules_) {
+    module->reset_wind_down();
+  }
+
   // setup master
   if (setupMaster() != CallbackReturn::SUCCESS) {
     return CallbackReturn::ERROR;

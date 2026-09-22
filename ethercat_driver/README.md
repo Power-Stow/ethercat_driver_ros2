@@ -125,6 +125,11 @@ watchdog allows, which is the failure the wind-down exists to avoid.
 straight from ACTIVE; after `on_deactivate()` the master is already released and it returns
 immediately.
 
+`on_activate()` calls `EcSlave::reset_wind_down()` on every module before it brings the bus up.
+The modules are created once, in `on_init()`, and outlive a deactivate/activate cycle, so a
+wind-down left in force would go on commanding the slaves down instead of letting them come back
+up.
+
 ## Package Organization
 
 ```text

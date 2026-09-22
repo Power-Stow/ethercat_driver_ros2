@@ -60,6 +60,10 @@ public:
   /** True once the slave is de-energised and the cyclic exchange may stop.
    *  Slaves with nothing to wind down report completion immediately. */
   virtual bool wind_down_complete() {return true;}
+  /** Discard any state left by a previous wind-down, so the slave can be commanded normally
+   *  again. The driver calls this on every activation, because the same slave instances are
+   *  reused across a deactivate/activate cycle. */
+  virtual void reset_wind_down() {}
   /** Assign activate DC synchronization. return activate word*/
   virtual int assign_activate_dc_sync() {return 0x00;}
   /** number of elements in the syncs array. */

@@ -674,3 +674,78 @@ TEST_F(EcCiA402DriveTest, WindDownCompletesImmediatelyWhenNotOperational)
 
   EXPECT_TRUE(plugin_->wind_down_complete());
 }
+
+TEST_F(EcCiA402DriveTest, ResetWindDownRestoresCommandChannelsForReactivation)
+{
+  std::unordered_map<std::string, std::string> slave_parameters;
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0, 42};
+  slave_parameters["command_interface/effort"] = "1";
+  plugin_->parameters_ = slave_parameters;
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_OPERATION_ENABLED;
+  plugin_->mode_of_operation_display_ = 10;
+
+  uint8_t torque_address[2];
+  plugin_->processData(2, torque_address);
+  ASSERT_EQ(EC_READ_S16(torque_address), 42);
+
+  plugin_->start_wind_down(0.01, 1.0);
+  plugin_->processData(2, torque_address);
+
+  // While the wind-down runs the commanded torque is replaced by the configured default.
+  ASSERT_EQ(EC_READ_S16(torque_address), -5);
+
+  plugin_->reset_wind_down();
+
+  // A deactivate -> activate cycle reuses this instance, so the override the wind-down forced onto
+  // every command channel has to come back off: otherwise the drive spends the next run pinned to
+  // its defaults.
+  plugin_->processData(2, torque_address);
+  EXPECT_EQ(EC_READ_S16(torque_address), 42);
+
+  // And the control word has to follow the automatic transitions again rather than stay pinned to
+  // a wind-down command, or the drive can never be taken back up to Operation Enabled.
+  plugin_->state_ = STATE_SWITCH_ON_DISABLED;
+  uint8_t control_word_address[4];
+  EC_WRITE_U16(control_word_address, 0x0000);
+  plugin_->processData(4, control_word_address);
+
+  EXPECT_EQ(EC_READ_U16(control_word_address), 0x0006) << "expected Shutdown, not a wind-down word";
+}
+
+TEST_F(EcCiA402DriveTest, ResetWindDownLeavesTheWindDownAbleToRunAgain)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_OPERATION_ENABLED;
+
+  uint8_t domain_address[4];
+  plugin_->start_wind_down(0.01, 1.0);
+  EC_WRITE_U16(domain_address, 0x000F);
+  plugin_->processData(4, domain_address);
+  ASSERT_EQ(EC_READ_U16(domain_address), 0x0007);
+
+  plugin_->reset_wind_down();
+
+  // Idle again, so the next shutdown's loop is not told the wind-down is already finished.
+  EXPECT_TRUE(plugin_->wind_down_complete());
+  EXPECT_EQ(plugin_->wind_down_cycles_, 0u);
+
+  plugin_->start_wind_down(0.01, 1.0);
+  EXPECT_FALSE(plugin_->wind_down_complete());
+
+  EC_WRITE_U16(domain_address, 0x000F);
+  plugin_->processData(4, domain_address);
+
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0007);
+}

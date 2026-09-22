@@ -60,6 +60,12 @@ public:
   /** True once the drive has reached a de-energised state, or was never operational. */
   virtual bool wind_down_complete();
 
+  /** Release the control word and the other command channels, so the drive can be taken back up
+   *  to Operation Enabled. Called on activation: the same plugin instance is reused across a
+   *  deactivate/activate cycle, and a wind-down left in place would keep commanding the drive
+   *  down forever. */
+  virtual void reset_wind_down();
+
   /// @brief Setup CSV dumping internals from plugin parameters.
   void setup_csv_dump();
 
@@ -93,6 +99,10 @@ protected:
   bool quick_stop_supported_ = false;
   uint32_t wind_down_cycles_ = 0;
   uint32_t quick_stop_hold_cycles_ = 0;
+  /** Each channel's configured override_command, taken when the wind-down starts and put back
+   *  when it is reset. The wind-down forces them all true, and that is channel state which
+   *  outlives the wind-down itself. */
+  std::vector<bool> pre_wind_down_override_command_;
   double joint_offset_ = 0.0;
   double last_position_ = std::numeric_limits<double>::quiet_NaN();
 
