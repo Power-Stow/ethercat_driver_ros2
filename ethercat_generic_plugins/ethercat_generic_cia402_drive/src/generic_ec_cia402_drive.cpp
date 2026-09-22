@@ -782,6 +782,14 @@ uint16_t EcCiA402Drive::wind_down_transition(DeviceState state)
         return CONTROL_WORD_QUICK_STOP;
       }
       return CONTROL_WORD_DISABLE_VOLTAGE;
+    case STATE_FAULT_REACTION_ACTIVE:
+      // The drive is running its fault reaction: still decelerating under power, and it reaches
+      // Fault on its own once that finishes. Completing here would release the master onto a
+      // moving axis, which is the failure this whole loop exists to avoid, so keep the frames
+      // going until the drive leaves the state. Unlike Quick Stop Active this needs no budget of
+      // its own: the reaction is transient by specification, so a drive still here when the
+      // caller's timeout expires has something wrong with it and the warning is earned.
+      return CONTROL_WORD_DISABLE_VOLTAGE;
     default:
       // Every other state has the drive function disabled, which is the whole point of winding
       // down before the frames stop. Disable Voltage still goes out on this cycle, so the drive

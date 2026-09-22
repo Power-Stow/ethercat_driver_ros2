@@ -675,6 +675,37 @@ TEST_F(EcCiA402DriveTest, WindDownCompletesImmediatelyWhenNotOperational)
   EXPECT_TRUE(plugin_->wind_down_complete());
 }
 
+TEST_F(EcCiA402DriveTest, WindDownWaitsOutTheFaultReaction)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_FAULT_REACTION_ACTIVE;
+
+  plugin_->start_wind_down(0.01, 1.0);
+
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x000F);
+  plugin_->processData(4, domain_address);
+
+  // The drive is still decelerating under power, so releasing the master now would stop the frames
+  // on a moving axis.
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  EXPECT_FALSE(plugin_->wind_down_complete());
+
+  // The reaction ends in Fault on the drive's own account, and there the power stage is off.
+  plugin_->state_ = STATE_FAULT;
+  plugin_->processData(4, domain_address);
+
+  // Still no fault reset: the standing fault has to survive into the next start-up.
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  EXPECT_TRUE(plugin_->wind_down_complete());
+}
+
 TEST_F(EcCiA402DriveTest, ResetWindDownRestoresCommandChannelsForReactivation)
 {
   std::unordered_map<std::string, std::string> slave_parameters;

@@ -20,11 +20,21 @@ the drive declares `quick_stop_supported` in its slave config:
 | ----- | --------------------------------------- | ---------------------------- |
 | Operation Enabled | Disable Operation (`0x0007`) | Quick Stop (`0x000B`) |
 | Quick Stop Active | Disable Voltage (`0x0000`) | Quick Stop, then Disable Voltage once the ramp budget is spent |
+| Fault Reaction Active | Disable Voltage (`0x0000`), still winding down | Disable Voltage (`0x0000`), still winding down |
 | anything else | Disable Voltage (`0x0000`), wind-down complete | Disable Voltage (`0x0000`), wind-down complete |
 
 The wind-down reports itself complete as soon as the drive function is disabled, which is every
-state except Operation Enabled and Quick Stop Active. Disable Voltage still goes out on that cycle,
-so the drive carries the command down to Switch On Disabled on its own once the frames stop.
+state except Operation Enabled, Quick Stop Active and Fault Reaction Active. Disable Voltage still
+goes out on that cycle, so the drive carries the command down to Switch On Disabled on its own once
+the frames stop.
+
+Fault Reaction Active is not a stopped state: the drive is running its fault reaction, decelerating
+under power, and reaches Fault by itself once that finishes. The wind-down keeps cycling until it
+gets there, so the master is not released onto a moving axis. It needs no budget of its own, unlike
+the quick stop ramp, because the reaction is transient by specification — a drive still in it when
+`shutdown_wind_down_timeout_s` expires has something wrong with it, and the timeout warning is then
+the right outcome. Fault itself is a completed state: the power stage is off, and the fault is left
+standing rather than reset.
 
 Waiting to *observe* Switch On Disabled would be stricter but wrong in practice: a drive can leave
 Operation Enabled within a few cycles and then park in Ready to Switch On while its DC bus is live,
