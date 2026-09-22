@@ -880,6 +880,13 @@ CallbackReturn EthercatDriver::configNetwork()
     }
   }
 
+  // Whether a failed startup config SDO download is fatal (see the download loop below).
+  require_startup_sdo_ = false;
+  if (info_.hardware_parameters.find("require_startup_sdo") != info_.hardware_parameters.end()) {
+    const std::string & value = info_.hardware_parameters["require_startup_sdo"];
+    require_startup_sdo_ = (value == "true" || value == "1" || value == "True");
+  }
+
   // start EC and wait until state operative
 
   master_->setCtrlFrequency(control_frequency_);
@@ -936,15 +943,26 @@ CallbackReturn EthercatDriver::configNetwork()
   }
 
   if (failed_sdo_count > 0) {
-    // The startup SDOs carry the drive's speed limit, torque limits and control gains. Coming up
-    // without them would silently run the axis on whatever the drive happens to hold, so this is
-    // refused rather than warned about.
-    RCLCPP_FATAL(
+    if (require_startup_sdo_) {
+      // The startup SDOs carry values such as the drive's speed limit, torque limits and control
+      // gains. Coming up without them silently runs the axis on whatever the drive happens to
+      // hold, which is worth refusing an activation over on a machine that relies on them.
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"),
+        "%zu startup config SDO download(s) failed; refusing to bring the bus up without the "
+        "limits and gains they carry (require_startup_sdo is set).",
+        failed_sdo_count);
+      return CallbackReturn::ERROR;
+    }
+
+    // Default, and what this driver has always done: the bus comes up anyway. Said out loud,
+    // because the drives then run on whatever they already hold.
+    RCLCPP_WARN(
       rclcpp::get_logger("EthercatDriver"),
-      "%zu startup config SDO download(s) failed; refusing to bring the bus up without the limits "
-      "and gains they carry.",
+      "%zu startup config SDO download(s) failed; bringing the bus up anyway, so the drives keep "
+      "whatever values they already hold. Set the hardware parameter require_startup_sdo to true "
+      "to refuse the activation instead.",
       failed_sdo_count);
-    return CallbackReturn::ERROR;
   }
 
   return CallbackReturn::SUCCESS;

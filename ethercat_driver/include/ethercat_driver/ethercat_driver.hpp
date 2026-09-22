@@ -168,6 +168,9 @@ protected:
   double shutdown_wind_down_timeout_s_ = 1.0;
   /** Budget in seconds for the activation/bring-up loop; <= 0 waits indefinitely. */
   double activation_timeout_s_ = 10.0;
+  /** Whether a failed startup config SDO download refuses the activation. Off by default, so
+   *  the bus still comes up on whatever the drives already hold, as it always has. */
+  bool require_startup_sdo_ = false;
 
   std::shared_ptr<ethercat_interface::EcMaster> master_;
   std::mutex ec_mutex_;

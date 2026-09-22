@@ -44,6 +44,7 @@ Set on the `<hardware>` element of the `ros2_control` system.
 `activation_cpu_core` — CPU core the activation/bring-up loop is pinned to; `< 0` (default) leaves the CPU affinity unchanged.
 `shutdown_wind_down_timeout_s` — budget in seconds for the shutdown wind-down loop (default `1.0`); `<= 0` skips the wind-down.
 `activation_timeout_s` — budget in seconds for the activation/bring-up loop (default `10.0`); `<= 0` waits indefinitely.
+`require_startup_sdo` — refuse the activation when a startup config SDO download fails (default `false`, which brings the bus up anyway).
 
 ### Real-time activation loop
 
@@ -82,22 +83,28 @@ For reference, a healthy bring-up of a single DC drive takes about six seconds i
 loop's initial one second delay, and that delay counts against the budget. A bus carrying more
 DC slaves needs a larger one.
 
-A slave whose identity reads `0x00000000:0x00000000` in `ethercat slaves` while stuck in `INIT` has
-not released its EEPROM to the master — its own CPU still owns register `0x0500` — so the master
-cannot match it against the configured vendor and product code and never configures it.
+If you ever experience a slave who won't initialize (i.e. stuck in `INIT`) and whose identity reads `0x00000000:0x00000000` in `ethercat slaves`, it is because the device has not released its EEPROM to the master — its own CPU still owns register `0x0500` — so the master cannot match it against the configured vendor and product code and never configures it.
 `ethercat rescan` usually clears that.
 
 ### Startup SDO failures
 
-The per-module startup SDOs carry the drive's speed limit, torque limits and control gains.
-A failed download is reported at `ERROR` with the `errno` from the transfer and the CoE abort code,
-and `configNetwork()` then refuses to continue rather than bringing the bus up on whatever the
-drives happen to hold.
+A failed download is reported at `ERROR` with the `errno` from the transfer and the CoE abort code.
 
 A zero abort code means the transfer never reached the drive's CoE layer — the slave is unreachable
 or its mailbox is not up — as opposed to the drive rejecting the object. The message says so,
 because the previous wording reported the abort code alone and so read as `Error: 0` for exactly
 the case where the drive was never spoken to.
+
+What happens next is governed by `require_startup_sdo`:
+
+| `require_startup_sdo` | Behaviour |
+| --------------------- | --------- |
+| `false` (default) | The bus comes up anyway and a `WARN` summary says how many downloads failed. This is what the driver has always done, so an existing configuration is unaffected. |
+| `true` | `configNetwork()` returns `ERROR` and the activation is refused. |
+
+Enable it where the startup SDOs carry values the machine depends on — a speed limit, torque
+limits, control gains. A drive that did not receive them runs on whatever it already holds, which
+may be the defaults of whoever configured it last, and nothing downstream can tell the difference.
 
 ### Shutdown wind-down
 
@@ -114,8 +121,7 @@ mirror image of the bring-up loop in `on_activate()`. Each module is asked to wi
 reports `EcSlave::wind_down_complete()`, or until `shutdown_wind_down_timeout_s` expires. Modules
 with nothing to wind down report completion immediately, so the loop costs a single cycle for a bus
 that carries none. `ethercat_generic_cia402_drive` uses it to disable and then de-energise
-the drive, or to Quick Stop it where its slave config declares `quick_stop_supported`; see that
-package's README for the sequence and for why Quick Stop is opt-in.
+the drive, or to Quick Stop it where its slave config declares `quick_stop_supported`.
 
 `activation_thread_priority` and `activation_cpu_core` apply to this loop too, for the same reason
 they apply to bring-up: a scheduling gap here stops the frames for longer than a DC slave's sync
