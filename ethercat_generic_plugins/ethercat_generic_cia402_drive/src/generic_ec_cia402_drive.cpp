@@ -115,6 +115,9 @@ void EcCiA402Drive::updateState()
       );
     }
   }
+
+  latch_fault_error_code();
+
   last_status_word_ = status_word_;
   last_state_ = state_;
   counter_++;
@@ -135,6 +138,54 @@ void EcCiA402Drive::updateState()
       joint_offset_);
     initialization_position_logged_ = true;
   }
+}
+
+void EcCiA402Drive::latch_fault_error_code()
+{
+  // Deliberately kept across the reset that follows. A drive clears 0x603F within a cycle or two of
+  // being acknowledged, and with auto_fault_reset the acknowledgement goes out on the very next cycle,
+  // so reading the live object afterwards says only that the drive is no longer complaining. Whoever
+  // has to explain the trip needs what it was complaining about.
+  const bool in_fault = state_ == STATE_FAULT || state_ == STATE_FAULT_REACTION_ACTIVE;
+  if (!in_fault) {
+    return;
+  }
+
+  const bool was_in_fault = last_state_ == STATE_FAULT || last_state_ == STATE_FAULT_REACTION_ACTIVE;
+  if (!was_in_fault) {
+    // A new fault replaces the previous record rather than being discarded behind it.
+    last_fault_error_code_ = error_code_;
+    last_fault_status_word_ = status_word_;
+    fault_error_code_logged_ = false;
+  } else if (last_fault_error_code_ == 0 && error_code_ != 0) {
+    // Drives do not all publish the error code and the fault bit on the same cycle, so the first
+    // non-zero code seen while the fault stands is taken rather than only the one at the edge.
+    last_fault_error_code_ = error_code_;
+  }
+
+  if (!fault_error_code_logged_ && last_fault_error_code_ != 0) {
+    RCLCPP_ERROR(
+      rclcpp::get_logger("EthercatDriver"),
+      "EcCiA402Drive: drive faulted with error code 0x%04x, status word 0x%04x [slave pos: %u]. "
+      "The code is latched on the last_error_code state interface; the drive's own 0x603F is cleared "
+      "by the reset that follows.",
+      last_fault_error_code_,
+      last_fault_status_word_,
+      position_);
+    fault_error_code_logged_ = true;
+  }
+}
+
+void EcCiA402Drive::publish_last_error_code()
+{
+  if (last_error_code_state_interface_index_ < 0 || state_interface_ptr_ == nullptr) {
+    return;
+  }
+  if (static_cast<size_t>(last_error_code_state_interface_index_) >= state_interface_ptr_->size()) {
+    return;
+  }
+  state_interface_ptr_->at(last_error_code_state_interface_index_) =
+    static_cast<double>(last_fault_error_code_);
 }
 
 void EcCiA402Drive::setup_csv_dump()
@@ -419,10 +470,17 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
     status_word_ = channel.last_value;
   }
 
+  // Special case: Error Code. Read every cycle so the latch below has the live value to take when the
+  // drive raises the fault bit.
+  if (channel.index == CiA402D_TPDO_ERROR_CODE) {
+    error_code_ = static_cast<uint16_t>(channel.last_value);
+  }
+
 
   // CHECK FOR STATE CHANGE
   if (entry_idx == domain_map_.size() - 1) {  // if last entry in domain
     updateState();
+    publish_last_error_code();
     if (wind_down_requested_ && !wind_down_complete_) {
       ++wind_down_cycles_;
     }
@@ -514,6 +572,30 @@ bool EcCiA402Drive::setupSlave(
             value.c_str());
     }
   }
+
+  if (parameters_.find("state_interface/last_error_code") != parameters_.end()) {
+    const std::string & value = parameters_["state_interface/last_error_code"];
+    try {
+      last_error_code_state_interface_index_ = std::stoi(value);
+    } catch (const std::invalid_argument &) {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("EthercatDriver"),
+        "EcCiA402Drive: failed to parse parameter 'state_interface/last_error_code' with value '%s'",
+        value.c_str());
+    } catch (const std::out_of_range &) {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("EthercatDriver"),
+        "EcCiA402Drive: parameter 'state_interface/last_error_code' out of range with value '%s'",
+        value.c_str());
+    }
+  }
+
+  // A drive that has not faulted yet reports zero rather than NaN, so a reader can tell "no fault on
+  // record" from "this interface is not mapped", which stays NaN because nothing writes it.
+  last_fault_error_code_ = 0;
+  last_fault_status_word_ = 0;
+  fault_error_code_logged_ = false;
+  publish_last_error_code();
 
   setup_csv_dump();
 

@@ -77,6 +77,11 @@ public:
 
   void updateState();
 
+  /** The error code the drive reported for the fault it is in, or the last one it was in.
+   *  Survives the reset that clears 0x603F on the drive itself, so a fault that was acknowledged
+   *  automatically still leaves something to read. Zero until the drive has faulted once. */
+  uint16_t last_fault_error_code() const {return last_fault_error_code_;}
+
 protected:
   uint32_t counter_ = 0;
   uint16_t last_status_word_ = -1;
@@ -90,6 +95,13 @@ protected:
   bool fault_reset_ = false;
   int fault_reset_command_interface_index_ = -1;
   bool last_fault_reset_command_ = false;
+  uint16_t error_code_ = 0;
+  /** Latched at the fault edge rather than read live, because a fault reset clears 0x603F on the
+   *  drive within a cycle or two and an automatic reset gets there before anything can read it. */
+  uint16_t last_fault_error_code_ = 0;
+  uint16_t last_fault_status_word_ = 0;
+  bool fault_error_code_logged_ = false;
+  int last_error_code_state_interface_index_ = -1;
   bool initialization_position_logged_ = false;
   double last_raw_position_ = std::numeric_limits<double>::quiet_NaN();
   bool joint_offset_startup_wrap_enabled_ = false;
@@ -116,6 +128,10 @@ protected:
   std::vector<std::size_t> csv_tpdo_domain_indices_;
   std::chrono::steady_clock::time_point csv_t0_ = std::chrono::steady_clock::now();
 
+  /** Record the error code of the fault the drive is in, if it is in one. */
+  void latch_fault_error_code();
+  /** Write the latched error code to its state interface, when the URDF declares one. */
+  void publish_last_error_code();
   /** returns device state based upon the status_word */
   DeviceState deviceState(uint16_t status_word);
   /** returns the control word that will take device from state to next desired state */
