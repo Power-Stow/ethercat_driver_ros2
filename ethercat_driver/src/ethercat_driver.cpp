@@ -965,8 +965,8 @@ CallbackReturn EthercatDriver::configNetwork()
   size_t failed_sdo_count = 0;
   for (auto i = 0ul; i < ec_modules_.size(); i++) {
     for (auto & sdo : ec_modules_[i]->sdo_config) {
-      // Only written when the transfer reached the drive's CoE layer and was aborted there, so it
-      // has to start at zero for the "never reached the drive" case to be distinguishable.
+      // Only written when the drive's CoE layer aborts the transfer, so it has to start at zero for
+      // a failure without a reported abort to be distinguishable.
       uint32_t abort_code = 0;
       RCLCPP_INFO(
         rclcpp::get_logger("EthercatDriver"),
@@ -994,8 +994,8 @@ CallbackReturn EthercatDriver::configNetwork()
           std::strerror(ret < 0 ? -ret : ret),
           abort_code,
           abort_code == 0 ?
-          " (zero: the transfer never reached the drive's CoE layer, so the slave is unreachable "
-          "or its mailbox is not up - check 'ethercat slaves' for its state and identity)" : "");
+          " (zero: no CoE abort was reported, which usually means the transfer did not reach the "
+          "drive's CoE layer - check 'ethercat slaves' for its state and identity)" : "");
       }
     }
   }
@@ -1351,7 +1351,7 @@ hardware_interface::return_type EthercatDriver::perform_command_mode_switch(
 double EthercatDriver::joint_position_state(size_t joint_index) const
 {
   const auto & state_interfaces = info_.joints[joint_index].state_interfaces;
-  for (auto k = 0ul; k < state_interfaces.size(); k++) {
+  for (size_t k = 0; k < state_interfaces.size(); k++) {
     if (state_interfaces[k].name == hardware_interface::HW_IF_POSITION) {
       return hw_joint_states_[joint_index][k];
     }
@@ -1361,8 +1361,8 @@ double EthercatDriver::joint_position_state(size_t joint_index) const
 
 void EthercatDriver::release_joint_command(const std::string & interface_name)
 {
-  for (auto j = 0ul; j < info_.joints.size(); j++) {
-    for (auto i = 0ul; i < info_.joints[j].command_interfaces.size(); i++) {
+  for (size_t j = 0; j < info_.joints.size(); j++) {
+    for (size_t i = 0; i < info_.joints[j].command_interfaces.size(); i++) {
       const std::string & name = info_.joints[j].command_interfaces[i].name;
       if (interface_name != info_.joints[j].name + "/" + name) {
         continue;

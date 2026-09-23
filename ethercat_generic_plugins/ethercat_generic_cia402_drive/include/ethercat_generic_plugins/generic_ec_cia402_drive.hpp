@@ -125,9 +125,9 @@ protected:
   /** Until when a drive in Quick Stop Active is left on its quick stop ramp before Disable Voltage.
    *  A steady_clock deadline, so a scheduling stall cannot use up the ramp in a burst of cycles. */
   std::chrono::steady_clock::time_point quick_stop_hold_until_{};
-  /** Each channel's configured override_command, taken when the wind-down starts and put back
-   *  when it is reset. The wind-down forces them all true, and that is channel state which
-   *  outlives the wind-down itself. */
+  /** Each channel's override_command, taken when the wind-down starts and put back when it is
+   *  reset. The wind-down forces them all true, and that is channel state which outlives the
+   *  wind-down itself. Invariant: empty, or exactly one entry per element of pdo_channels_info_. */
   std::vector<bool> pre_wind_down_override_command_;
   double joint_offset_ = 0.0;
   double last_position_ = std::numeric_limits<double>::quiet_NaN();

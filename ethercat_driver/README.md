@@ -97,8 +97,9 @@ If you ever experience a slave who won't initialize (i.e. stuck in `INIT`) and w
 
 A failed download is reported at `ERROR` with the `errno` from the transfer and the CoE abort code.
 
-A zero abort code means the transfer never reached the drive's CoE layer — the slave is unreachable
-or its mailbox is not up — as opposed to the drive rejecting the object. The message says so,
+A zero abort code means no CoE abort was reported. That usually means the transfer did not reach the
+drive's CoE layer — the slave is unreachable or its mailbox is not up — rather than the drive
+rejecting the object, but a zero is not proof of it. The message says so,
 because the previous wording reported the abort code alone and so read as `Error: 0` for exactly
 the case where the drive was never spoken to.
 

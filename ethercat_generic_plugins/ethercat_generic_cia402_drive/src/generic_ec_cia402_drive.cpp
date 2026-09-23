@@ -522,6 +522,8 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
 
   // Special case: Error Code. Read every cycle so the latch below has the live value to take when the
   // drive raises the fault bit.
+  // The channel reads 0x603F as a uint16 and stores it in last_value as a double, which represents
+  // every uint16 exactly, so the cast back loses nothing.
   if (channel.index == CiA402D_TPDO_ERROR_CODE) {
     error_code_ = static_cast<uint16_t>(channel.last_value);
   }
@@ -776,14 +778,17 @@ void EcCiA402Drive::start_wind_down(double timeout_s)
 {
   // Taken before the first wind-down cycle forces them all true, because override_command lives
   // on the channel rather than on the wind-down: without this the drive would come back up with
-  // every command channel still pinned to its default. Cast the way processData() does, since
-  // that is the view through which the wind-down sets the flag in the first place.
+  // every command channel still pinned to its default. Checked with dynamic_cast rather than
+  // assumed: override_command belongs to single-interface channels only, and a channel of any other
+  // type is recorded as false and skipped on restore. One entry per channel either way, so the
+  // snapshot is either empty or exactly as long as pdo_channels_info_.
   pre_wind_down_override_command_.clear();
   pre_wind_down_override_command_.reserve(pdo_channels_info_.size());
   for (auto * channel : pdo_channels_info_) {
-    auto * single_channel =
-      static_cast<ethercat_interface::EcPdoSingleInterfaceChannelManager *>(channel);
-    pre_wind_down_override_command_.push_back(single_channel->override_command);
+    const auto * single_channel =
+      dynamic_cast<const ethercat_interface::EcPdoSingleInterfaceChannelManager *>(channel);
+    pre_wind_down_override_command_.push_back(
+      single_channel != nullptr && single_channel->override_command);
   }
 
   wind_down_requested_ = true;
@@ -844,14 +849,16 @@ void EcCiA402Drive::reset_wind_down()
     return;
   }
 
-  // Put every channel back the way the slave config had it. Anything the wind-down did not
-  // snapshot is left alone, so a channel added since is not silently re-configured here.
-  const size_t restored =
-    std::min(pdo_channels_info_.size(), pre_wind_down_override_command_.size());
-  for (size_t i = 0; i < restored; ++i) {
-    auto * single_channel =
-      static_cast<ethercat_interface::EcPdoSingleInterfaceChannelManager *>(pdo_channels_info_[i]);
-    single_channel->override_command = pre_wind_down_override_command_[i];
+  // Put every channel back the way it was when the wind-down started. The snapshot is either empty
+  // or holds one entry per channel (see start_wind_down()), so its emptiness is the only check.
+  if (!pre_wind_down_override_command_.empty()) {
+    for (size_t i = 0; i < pdo_channels_info_.size(); ++i) {
+      auto * single_channel =
+        dynamic_cast<ethercat_interface::EcPdoSingleInterfaceChannelManager *>(pdo_channels_info_[i]);
+      if (single_channel != nullptr) {
+        single_channel->override_command = pre_wind_down_override_command_[i];
+      }
+    }
   }
   pre_wind_down_override_command_.clear();
 

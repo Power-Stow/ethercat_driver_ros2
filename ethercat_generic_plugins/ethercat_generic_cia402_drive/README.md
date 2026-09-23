@@ -92,7 +92,7 @@ so it completes after a single cycle.
 ### Reactivation
 
 `reset_wind_down()` releases the control word and puts every command channel's `override_command`
-back the way the slave config had it. The driver calls it on activation, because the plugin
+back the way it was when the wind-down started. The driver calls it on activation, because the plugin
 instance outlives a deactivate/activate cycle: without the reset the drive would be commanded
 down on every cycle of the next run, and no automatic transition could take it back up to
 Operation Enabled.
