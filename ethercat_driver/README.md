@@ -43,7 +43,7 @@ Set on the `<hardware>` element of the `ros2_control` system.
 `activation_thread_priority` — SCHED_FIFO priority applied to the activation/bring-up loop only; `<= 0` (default) keeps normal scheduling.
 `activation_cpu_core` — CPU core the activation/bring-up loop is pinned to; `< 0` (default) leaves the CPU affinity unchanged.
 `shutdown_wind_down_timeout_s` — budget in seconds for the shutdown wind-down loop (default `1.0`); `<= 0` skips the wind-down.
-`activation_timeout_s` — budget in seconds for the activation/bring-up loop (default `10.0`); `<= 0` waits indefinitely.
+`activation_timeout_s` — budget in seconds for the activation/bring-up loop (default `10.0`); `<= 0` waits indefinitely, and a positive value must exceed the loop's one second initial delay.
 `require_startup_sdo` — refuse the activation when a startup config SDO download fails (default `false`, which brings the bus up anyway).
 
 ### Real-time activation loop
@@ -82,8 +82,9 @@ master:
 For reference, a healthy bring-up of a single DC drive takes about six seconds including the
 loop's initial one second delay, and that delay counts against the budget. A bus carrying more
 DC slaves needs a larger one.
-The delay is shortened to `activation_timeout_s` when the budget is below one second,
-and both exits above are checked during it as well as during the loop itself.
+The delay makes no update, so `on_init()` rejects a positive budget that does not exceed it,
+which could never observe the bus coming up.
+Both exits above are checked during the delay as well as during the loop itself.
 Every wake-up is capped at the deadline it serves, so a control period longer than the remaining
 budget does not overshoot it.
 A shutdown request, and then the timeout, take precedence over a bus that has come up in the

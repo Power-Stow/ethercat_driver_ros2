@@ -59,6 +59,9 @@ double monotonic_elapsed_s(const struct timespec & since)
          static_cast<double>(now.tv_nsec - since.tv_nsec) * 1e-9;
 }
 
+/// How long on_activate() waits after activating the master before its first update, in seconds.
+constexpr double ACTIVATION_INITIAL_DELAY_S = 1.0;
+
 /// The CLOCK_MONOTONIC instant @p seconds after @p base.
 struct timespec monotonic_after(const struct timespec & base, double seconds)
 {
@@ -901,6 +904,16 @@ CallbackReturn EthercatDriver::configNetwork()
         rclcpp::get_logger("EthercatDriver"), "activation_timeout_s must be a finite number!");
       return CallbackReturn::ERROR;
     }
+    // The initial delay makes no update, so a budget it uses up could never observe the bus coming
+    // up: reject it here rather than fail every activation with a misleading timeout.
+    if (activation_timeout_s_ > 0.0 && activation_timeout_s_ <= ACTIVATION_INITIAL_DELAY_S) {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"),
+        "activation_timeout_s (%.3f s) must exceed the %.1f s initial delay of the bring-up loop, "
+        "or be <= 0 to wait indefinitely!",
+        activation_timeout_s_, ACTIVATION_INITIAL_DELAY_S);
+      return CallbackReturn::ERROR;
+    }
   }
 
   // Budget for the shutdown wind-down loop (see windDownSlaves()).
@@ -1085,12 +1098,12 @@ CallbackReturn EthercatDriver::on_activate(
 
   const uint32_t interval_ns = master_->getInterval();
 
-  // Start after one second, or sooner when activation_timeout_s is shorter. Slept one period at a
-  // time rather than in one go, so a shutdown request is honoured during the delay as well. Every
-  // wake-up is capped at the deadline it serves, so a control period longer than the remaining
-  // budget cannot overshoot it: the last step of the delay, and of the loop below, is cut short.
-  const double initial_delay_s =
-    activation_timeout_s_ > 0.0 ? std::min(1.0, activation_timeout_s_) : 1.0;
+  // Start after the initial delay, which on_init() guarantees is shorter than activation_timeout_s.
+  // Slept one period at a time rather than in one go, so a shutdown request is honoured during the
+  // delay as well. Every wake-up is capped at the deadline it serves, so a control period longer than
+  // the remaining budget cannot overshoot it: the last step of the delay, and of the loop below, is
+  // cut short.
+  const double initial_delay_s = ACTIVATION_INITIAL_DELAY_S;
   const struct timespec initial_delay_end = monotonic_after(activation_start, initial_delay_s);
   const struct timespec activation_deadline =
     monotonic_after(activation_start, activation_timeout_s_ > 0.0 ? activation_timeout_s_ : 0.0);
