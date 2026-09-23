@@ -1088,6 +1088,16 @@ CallbackReturn EthercatDriver::on_activate(
   }
 
   if (!operational) {
+    // On a bus that is only part of the way up, the drives that already reached Operation Enabled
+    // would otherwise lose their cyclic data while energised. The ones still pending report the
+    // wind-down complete at once, so this costs nothing when no drive got that far.
+    try {
+      windDownSlaves();
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(
+        rclcpp::get_logger("EthercatDriver"),
+        "EtherCAT wind-down failed: %s. Releasing the master anyway.", e.what());
+    }
     if (master_) {
       master_->shutdown();
       master_.reset();
@@ -1131,7 +1141,9 @@ std::string EthercatDriver::pendingModuleDescription()
 
 void EthercatDriver::windDownSlaves()
 {
-  if (!activated_ || !master_ || !master_->isValid()) {
+  // Deliberately not gated on activated_: a failed bring-up winds down whatever reached OP too.
+  // The master is released on every exit from ACTIVE, so a released bus still returns here.
+  if (!master_ || !master_->isValid()) {
     return;
   }
 

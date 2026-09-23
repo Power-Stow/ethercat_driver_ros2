@@ -131,6 +131,11 @@ watchdog allows, which is the failure the wind-down exists to avoid.
 straight from ACTIVE; after `on_deactivate()` the master is already released and it returns
 immediately.
 
+`on_activate()` runs it as well when it gives up on the bus, on `activation_timeout_s` or a
+shutdown request. Some drives may already be in Operation Enabled while another module is still
+pending, and releasing the master under them is the same failure. Modules that never became
+operational report the wind-down complete at once.
+
 `on_activate()` calls `EcSlave::reset_wind_down()` on every module before it brings the bus up.
 The modules are created once, in `on_init()`, and outlive a deactivate/activate cycle, so a
 wind-down left in force would go on commanding the slaves down instead of letting them come back

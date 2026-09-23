@@ -116,6 +116,8 @@ protected:
    *
    * Returns once every module reports the wind-down complete or `shutdown_wind_down_timeout_s_`
    * has elapsed, whichever comes first.
+   * Also runs when `on_activate()` gives up on a bus that is only partly operational,
+   * so a drive that already reached Operation Enabled is not left energised.
    */
   void windDownSlaves();
 
