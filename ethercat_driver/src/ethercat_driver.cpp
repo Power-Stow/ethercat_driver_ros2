@@ -1641,7 +1641,14 @@ void EthercatDriver::parseDiagnosticsParameters()
   it = info_.hardware_parameters.find("diagnostics_period_s");
   if (it != info_.hardware_parameters.end()) {
     try {
-      diagnostics_period_s_ = std::stod(it->second);
+      const auto diagnostics_period_in = std::stod(it->second);
+      if (diagnostics_period_in > 0) {
+        diagnostics_period_s_ = diagnostics_period_in;
+      } else {
+        RCLCPP_WARN(
+          rclcpp::get_logger("EthercatDriver"),
+          "Invalid diagnostics_period_s (%f); using %.2f s.", diagnostics_period_in, diagnostics_period_s_);
+      }
     } catch (const std::exception & e) {
       RCLCPP_WARN(
         rclcpp::get_logger("EthercatDriver"),
@@ -1649,15 +1656,27 @@ void EthercatDriver::parseDiagnosticsParameters()
     }
   }
 
-  dc_time_diff_warn__ns_ = 10000; // 10 us
+  dc_time_diff_warn_ns_ = 10000; // 10 us
   it = info_.hardware_parameters.find("dc_time_diff_warn_ns");
   if (it != info_.hardware_parameters.end()) {
     try {
-      dc_time_diff_warn__ns_ = static_cast<int32_t>(std::stol(it->second));
+      dc_time_diff_warn_ns_ = static_cast<int32_t>(std::stol(it->second));
     } catch (const std::exception & e) {
       RCLCPP_WARN(
         rclcpp::get_logger("EthercatDriver"),
-        "Invalid dc_time_diff_warn_ns (%s); using %d ns.", e.what(), dc_time_diff_warn__ns_);
+        "Invalid dc_time_diff_warn_ns (%s); using %d ns.", e.what(), dc_time_diff_warn_ns_);
+    }
+  }
+
+  dt_tolerated_overrun_ = 0.5;  // 50 % overrun
+  it = info_.hardware_parameters.find("dt_tolerated_overrun");
+  if (it != info_.hardware_parameters.end()) {
+    try {
+      dt_tolerated_overrun_ = std::stod(it->second);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(
+        rclcpp::get_logger("EthercatDriver"),
+        "Invalid dt_tolerated_overrun (%s); using %.2f.", e.what(), dt_tolerated_overrun_);
     }
   }
 }
@@ -1684,7 +1703,7 @@ void EthercatDriver::updateTimingStatistics()
     timing_period_sum_s_ += dt;
     ++timing_sample_count_;
     timing_period_mean_s_ = timing_period_sum_s_ / static_cast<double>(timing_sample_count_);
-    if (expected_period_s > 0.0 && dt > 1.5 * expected_period_s) {
+    if (expected_period_s > 0.0 && dt > (1.0 + dt_tolerated_overrun_) * expected_period_s) {
       ++timing_overrun_count_;
     }
     timing_valid_ = true;
@@ -1829,7 +1848,7 @@ void EthercatDriver::produceSlaveDiagnostics(
     stat.add("dc_propagation_delay_ns", s.dc_propagation_delay__ns);
   }
   if (s.has_cia402) {
-    stat.add("cia402_state", s.cia402.device_state_label);
+    stat.add("cia402_state", std::string(s.cia402.device_state_label));
     stat.addf("status_word", "0x%04X", s.cia402.status_word);
   }
 
@@ -1840,9 +1859,10 @@ void EthercatDriver::produceSlaveDiagnostics(
       DiagnosticStatus::ERROR,
       "Slave not operational (AL state " + al_state_to_string(s.al_state) + ")");
   } else if (s.has_cia402 && s.cia402.in_fault) {
-    stat.summary(DiagnosticStatus::ERROR, "Drive fault: " + s.cia402.device_state_label);
+    stat.summary(
+      DiagnosticStatus::ERROR, std::string("Drive fault: ") + s.cia402.device_state_label);
   } else if (s.dc_system_time_diff_valid &&
-    std::abs(s.dc_system_time_diff__ns) > dc_time_diff_warn__ns_)
+    std::abs(s.dc_system_time_diff__ns) > dc_time_diff_warn_ns_)
   {
     stat.summary(DiagnosticStatus::WARN, "DC clock drift high");
   } else {

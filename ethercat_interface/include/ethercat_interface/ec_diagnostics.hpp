@@ -16,7 +16,6 @@
 #define ETHERCAT_INTERFACE__EC_DIAGNOSTICS_HPP_
 
 #include <cstdint>
-#include <string>
 #include <vector>
 
 namespace ethercat_interface
@@ -26,10 +25,13 @@ namespace ethercat_interface
 ///
 /// Populated by the drive plugin from its already-decoded status word so that the
 /// diagnostics layer stays decoupled from the CiA 402 state-machine definitions.
+/// Filled from the cyclic (real-time) loop, so it holds only trivially copyable data;
+/// the label is turned into a string by the non-real-time diagnostics publisher.
 struct Cia402Diagnostics
 {
   int device_state = 0;              //< DeviceState enum value from the drive plugin.
-  std::string device_state_label;    //< Human-readable device-state string.
+  /// Human-readable device-state label; must point to storage outliving the diagnostics publisher.
+  const char * device_state_label = "Undefined State";
   uint16_t status_word = 0;          //< Raw CiA 402 status word (object 0x6041).
   bool in_fault = false;             //< True while in a fault / fault-reaction state.
 };

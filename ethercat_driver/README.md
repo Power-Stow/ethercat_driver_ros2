@@ -47,7 +47,8 @@ Set on the `<hardware>` element of the `ros2_control` system.
 `require_startup_sdo` — refuse the activation when a startup config SDO download fails (default `false`, which brings the bus up anyway).
 `publish_diagnostics` — enable EtherCAT health diagnostics on `/diagnostics` (default `false`).
 `diagnostics_period_s` — diagnostics publish period in seconds (default `1.0`).
-`dc_time_diff_warn_ns` — per-slave DC system-time-difference magnitude above which a `WARN` is raised (default `1000`).
+`dc_time_diff_warn_ns` — per-slave DC system-time-difference magnitude above which a `WARN` is raised (default `10000`).
+`dt_tolerated_overrun` — fraction of the expected cycle period a cycle may exceed before it counts as an overrun, i.e. the threshold is `(1 + dt_tolerated_overrun) / control_frequency` (default `0.5`).
 
 ### Health diagnostics
 

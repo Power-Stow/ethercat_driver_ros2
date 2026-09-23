@@ -126,9 +126,10 @@ std::optional<ethercat_interface::Cia402Diagnostics> EcCiA402Drive::cia402Diagno
 {
   ethercat_interface::Cia402Diagnostics diag;
   diag.device_state = static_cast<int>(state_);
+  // Called from the cyclic loop: point at the static label table instead of copying a string.
   const auto label_it = DEVICE_STATE_STR.find(state_);
   diag.device_state_label =
-    (label_it != DEVICE_STATE_STR.end()) ? label_it->second : "Undefined State";
+    (label_it != DEVICE_STATE_STR.end()) ? label_it->second.c_str() : "Undefined State";
   diag.status_word = status_word_;
   diag.in_fault = (state_ == STATE_FAULT || state_ == STATE_FAULT_REACTION_ACTIVE);
   return diag;
