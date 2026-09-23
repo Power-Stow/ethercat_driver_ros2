@@ -780,3 +780,31 @@ TEST_F(EcCiA402DriveTest, ResetWindDownLeavesTheWindDownAbleToRunAgain)
 
   EXPECT_EQ(EC_READ_U16(domain_address), 0x0007);
 }
+
+// With auto_fault_reset off, a fault the drive came up in is cleared once, and a fault raised once
+// the drive has been in Operation Enabled latches. setupSlave() only runs in on_init, so the
+// one-shot has to be re-armed by reset_wind_down(), the hook the driver calls at the start of every
+// activation. Without that, a drive coming back up in Fault after a hardware component cycle would
+// stay there.
+TEST_F(EcCiA402DriveTest, StartupFaultResetIsReArmedOnEveryActivation)
+{
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  ASSERT_FALSE(plugin_->auto_fault_reset_);
+  ASSERT_TRUE(plugin_->reset_fault_on_startup_);
+
+  constexpr uint16_t enable_operation = 0x000F;
+  constexpr uint16_t fault_reset_bit = 0x0080;
+
+  // Came up in Fault: cleared.
+  EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, fault_reset_bit);
+
+  // Reached Operation Enabled: from here a fault is this session's, and latches.
+  plugin_->status_word_ = 0x1237;
+  plugin_->updateState();
+  ASSERT_TRUE(plugin_->operation_enabled_reached_);
+  EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, 0);
+
+  // The next activation, with no wind-down having run, is a fresh start again.
+  plugin_->reset_wind_down();
+  EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, fault_reset_bit);
+}

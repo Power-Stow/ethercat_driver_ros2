@@ -618,8 +618,9 @@ bool EcCiA402Drive::setupSlave(
   last_fault_error_code_ = 0;
   last_fault_status_word_ = 0;
   fault_error_code_logged_ = false;
-  // Re-armed per activation, so a deactivate/activate cycle clears a fault the same way a fresh start
-  // does rather than coming back up into one.
+  // Armed here for the first activation. setupSlave() only runs in on_init, so the re-arming for
+  // every later activation happens in reset_wind_down(), which the driver calls at the start of
+  // each one.
   operation_enabled_reached_ = false;
   startup_fault_reset_logged_ = false;
   publish_last_error_code();
@@ -787,6 +788,13 @@ bool EcCiA402Drive::wind_down_complete()
 
 void EcCiA402Drive::reset_wind_down()
 {
+  // Before the early return, so it happens on every activation and not only after a wind-down.
+  // This is the one per-activation hook a module gets: setupSlave() runs once, in on_init. A drive
+  // coming back up after a hardware component cycle is a fresh start as far as a fault it came up
+  // in is concerned, so the one-shot startup reset has to be available to it again.
+  operation_enabled_reached_ = false;
+  startup_fault_reset_logged_ = false;
+
   if (!wind_down_requested_) {
     return;
   }
