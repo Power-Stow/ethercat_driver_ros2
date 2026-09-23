@@ -21,6 +21,7 @@
 #include <unordered_map>
 #include <iostream>
 #include <cmath>
+#include <functional>
 #include <string>
 
 #include "ethercat_interface/ec_sdo_manager.hpp"
@@ -64,6 +65,21 @@ public:
    *  again. The driver calls this on every activation, because the same slave instances are
    *  reused across a deactivate/activate cycle. */
   virtual void reset_wind_down() {}
+
+  /// Read a single SDO from a slave: index, sub-index, data type, decoded value out. False on
+  /// failure.
+  using SdoReader = std::function<bool (uint16_t, uint8_t, const std::string &, double *)>;
+
+  /** Resolve any channel factors this slave reads from the drive rather than from its config.
+   *
+   * Called during network configuration on every activation, before the master is activated and
+   * therefore before any conversion has happened, so a drive swapped between activations is read
+   * again. Returns false when a factor could not be resolved and the channel has no literal to fall
+   * back on, or when the config asked for one wrongly, which leaves the caller to decide whether
+   * that is fatal.
+   */
+  virtual bool resolve_sdo_factors(const SdoReader & /*read_sdo*/) {return true;}
+
   /** Assign activate DC synchronization. return activate word*/
   virtual int assign_activate_dc_sync() {return 0x00;}
   /** number of elements in the syncs array. */

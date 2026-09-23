@@ -22,6 +22,8 @@
 #include <yaml-cpp/yaml.h>
 #include <ecrt.h>
 
+#include "ethercat_interface/ec_sdo_manager.hpp"
+
 #include <string>
 #include <vector>
 #include <limits>
@@ -87,6 +89,7 @@ struct InterfaceData
    * instead of the command interface value
    */
   bool override_command = false;
+
   uint8_t mask = 255;
   double default_value = std::numeric_limits<double>::quiet_NaN();
   /** last_value stores either:
@@ -183,6 +186,14 @@ public:
   PdoType pdo_type;
   uint16_t index;
   uint8_t sub_index;
+
+  /** @brief Where this channel's factor is read from, when the drive holds it rather than the
+   * config.
+   *
+   * On the manager rather than on InterfaceData, so a slave can see it through any channel. Only a
+   * single-interface channel can carry a valid one; a grouped channel records the key as invalid.
+   */
+  SdoFactorSource factor_source;
 
   inline
   std::string index_hex_str() const

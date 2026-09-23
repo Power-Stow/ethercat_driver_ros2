@@ -14,6 +14,8 @@
 //
 // Author: Maciej Bednarczyk (macbednarczyk@gmail.com)
 
+#include <cmath>
+#include <iostream>
 #include <numeric>
 
 #include "ethercat_generic_plugins/generic_ec_slave.hpp"
@@ -82,6 +84,67 @@ void GenericEcSlave::setup_syncs()
     }
   }
   syncs_.push_back({0xff, EC_DIR_INVALID, 0, nullptr, EC_WD_DISABLE});
+}
+
+bool GenericEcSlave::resolve_sdo_factors(const ethercat_interface::EcSlave::SdoReader & read_sdo)
+{
+  bool all_resolved = true;
+
+  for (auto * channel : pdo_channels_info_) {
+    if (channel == nullptr || !channel->factor_source.configured) {
+      continue;
+    }
+    const auto & source = channel->factor_source;
+
+    // Fatal even with a literal fallback: the config asked for the drive's value and wrote the
+    // request wrongly, which is a mistake to fix rather than one to run on.
+    if (!source.valid) {
+      std::cerr << "channel 0x" << std::hex << channel->index << std::dec <<
+        ": factor_from_sdo is incomplete or invalid in the slave config" << std::endl;
+      all_resolved = false;
+      continue;
+    }
+
+    // Only a single-interface channel parses a valid source, so the cast is safe; the factor itself
+    // lives on the channel's InterfaceData, which the base manager does not have.
+    auto * single = static_cast<ethercat_interface::EcPdoSingleInterfaceChannelManager *>(channel);
+
+    double raw_value = 0.0;
+    if (!read_sdo(source.index, source.sub_index, source.data_type, &raw_value)) {
+      // A channel that also declares a literal factor keeps it: the config author said what the
+      // value is when the drive cannot be asked, and that is better than a silent 1.0.
+      if (!source.has_literal_fallback) {
+        std::cerr << "channel 0x" << std::hex << channel->index << std::dec <<
+          ": could not read its factor from SDO 0x" << std::hex << source.index << std::dec <<
+          " and the config declares no factor to fall back on" << std::endl;
+        all_resolved = false;
+      } else {
+        // Restored from the source rather than left in place: an earlier activation may have
+        // overwritten the channel's factor with what it read then.
+        single->factor = source.literal_factor;
+        std::cerr << "channel 0x" << std::hex << channel->index << std::dec <<
+          ": could not read its factor from SDO 0x" << std::hex << source.index << std::dec <<
+          ", falling back on the configured factor " << single->factor << std::endl;
+      }
+      continue;
+    }
+
+    const double resolved = raw_value * source.scale;
+    if (resolved == 0.0 || !std::isfinite(resolved)) {
+      std::cerr << "channel 0x" << std::hex << channel->index << std::dec <<
+        ": SDO 0x" << std::hex << source.index << std::dec << " gave " << raw_value <<
+        ", which scales to an unusable factor" << std::endl;
+      all_resolved = false;
+      continue;
+    }
+
+    single->factor = resolved;
+    std::cout << "channel 0x" << std::hex << channel->index << std::dec <<
+      ": factor " << resolved << " read from SDO 0x" << std::hex << source.index << std::dec <<
+      " (raw " << raw_value << ")" << std::endl;
+  }
+
+  return all_resolved;
 }
 
 bool GenericEcSlave::setupSlave(

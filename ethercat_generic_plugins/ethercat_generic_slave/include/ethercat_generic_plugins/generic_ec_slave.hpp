@@ -43,6 +43,10 @@ public:
   virtual const ec_pdo_entry_info_t * channels();
   virtual void domains(DomainMap & domains) const;
 
+  /// Read the factor of every channel that asks for one from the drive. See
+  /// `EcSlave::resolve_sdo_factors`.
+  bool resolve_sdo_factors(const ethercat_interface::EcSlave::SdoReader & read_sdo) override;
+
   virtual bool setupSlave(
     std::unordered_map<std::string, std::string> slave_parameters,
     std::vector<double> * state_interface,

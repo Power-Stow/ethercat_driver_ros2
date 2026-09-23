@@ -81,6 +81,9 @@ Each PDO Channel has the following configuration flags:
     - Data mask, to be used with :code:`type` = :code:`bool`.
   * - :code:`factor`
     - Data conversion factor/scale (:code:`type` : :code:`double`).
+  * - :code:`factor_from_sdo`
+    - Read the factor from an SDO on the drive during network configuration instead. Takes
+      :code:`index`, :code:`sub_index`, :code:`type` and an optional :code:`scale`. See below.
   * - :code:`offset`
     - Data offset term (:code:`type` : :code:`double`).
 
@@ -97,6 +100,48 @@ Each PDO Channel has the following configuration flags:
   - take into account calibration offsets,
   - convert between different units,
   - take into account transmission parameters like gear reduction or screw lead for motor control.
+
+Factors read from the drive
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Some values are reported as a fraction of a rating the drive itself stores. CiA-402 defines
+:code:`0x6078` *current actual value* in thousandths of :code:`0x6075` *motor rated current*, which
+is in mA, and :code:`0x6077` *torque actual value* in thousandths of :code:`0x6076` *motor rated
+torque*. Writing the resulting :code:`factor` into the config restates a number the drive already
+holds, and a config that restates it is silently wrong on a drive whose rating differs.
+
+:code:`factor_from_sdo` reads the rating instead. The factor becomes the value read, multiplied by
+:code:`scale` (default 1). For current in amperes from a rating in mA, thousandths of it is
+:math:`10^{-6}`:
+
+.. code-block:: yaml
+
+  - {
+      index: 0x6078,
+      sub_index: 0,
+      type: int16,
+      state_interface: current,
+      factor_from_sdo: {index: 0x6075, sub_index: 0, type: uint32, scale: 1.0e-6},
+    }
+
+The read happens once, in :code:`configNetwork()`, after the startup SDOs have been downloaded and
+before the master is activated, so no value is ever converted with the default factor. Supported types
+are the integer types, :code:`float`/:code:`real32` and :code:`double`/:code:`real64`.
+
+A literal :code:`factor` on the same channel is the fallback for a drive that cannot be read, and the
+driver logs that it fell back. Without one, an unreadable rating **refuses the activation**, whatever
+:code:`require_startup_sdo` is set to: the channel would otherwise publish raw drive units under an
+interface that claims to be converted. A malformed :code:`factor_from_sdo` refuses the activation even
+beside a literal :code:`factor`, since it is a mistake in the config rather than a drive that cannot be
+reached.
+
+.. note:: Vendors do not all follow the standard reference. A drive whose torque actual value is in
+   thousandths of its *peak* torque rather than of :code:`0x6076` needs a literal :code:`factor`
+   instead, taken from its datasheet.
+
+.. note:: :code:`factor_from_sdo` is supported on single-interface channels only. On a channel using
+   :code:`data_mapping` it refuses the activation rather than being ignored, since a grouped channel has
+   one factor per mapped interface and a single rating does not say which it belongs to.
 
 Sync Manager Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -163,6 +163,19 @@ public:
     */
   int configSlaveSdo(uint16_t slave_position, SdoConfigEntry sdo_config, uint32_t * abort_code);
 
+  /** Read one SDO from a slave and decode it as `data_type`.
+   *
+   * Blocking, and not for the cyclic path: the master state machine processes the request. Used
+   * during network configuration to read values the slave config would otherwise have to restate.
+   */
+  int readSlaveSdo(
+    uint16_t slave_position,
+    uint16_t index,
+    uint8_t sub_index,
+    const std::string & data_type,
+    double * value,
+    uint32_t * abort_code);
+
   /** call after adding all slaves, and before update */
   bool activate();
 

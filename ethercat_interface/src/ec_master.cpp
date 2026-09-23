@@ -236,6 +236,44 @@ int EcMaster::configSlaveSdo(
   return ret;
 }
 
+int EcMaster::readSlaveSdo(
+  uint16_t slave_position,
+  uint16_t index,
+  uint8_t sub_index,
+  const std::string & data_type,
+  double * value,
+  uint32_t * abort_code)
+{
+  if (master_ == nullptr) {
+    printWarning("Read SDO. Master is not available.");
+    return -1;
+  }
+  if (value == nullptr) {
+    return -1;
+  }
+
+  uint8_t buffer[8] = {0};
+  size_t result_size = 0;
+  int ret = ecrt_master_sdo_upload(
+    master_,
+    slave_position,
+    index,
+    sub_index,
+    buffer,
+    sizeof(buffer),
+    &result_size,
+    abort_code
+  );
+  if (ret) {
+    return ret;
+  }
+  if (!SdoConfigEntry::buffer_read(buffer, result_size, data_type, value)) {
+    printWarning("Read SDO. Unsupported data type or short read.");
+    return -1;
+  }
+  return 0;
+}
+
 void EcMaster::registerPDOInDomain(
   std::vector<uint32_t> & channel_indices,
   DomainInfo * domain_info,

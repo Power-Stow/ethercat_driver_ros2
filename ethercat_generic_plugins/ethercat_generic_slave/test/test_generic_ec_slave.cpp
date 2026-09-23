@@ -16,6 +16,7 @@
 #include <pluginlib/class_loader.hpp>
 #include "ethercat_interface/ec_slave.hpp"
 #include "test_generic_ec_slave.hpp"
+#include "ethercat_interface/ec_pdo_single_interface_channel_manager.hpp"
 
 const char test_slave_config[] =
   R"(
@@ -251,4 +252,160 @@ TEST_F(GenericEcSlaveTest, SlaveSetupSyncManagerConfig)
   ASSERT_EQ(plugin_->sm_configs_[0].pdo_name, "null");
   ASSERT_EQ(plugin_->sm_configs_[2].pdo_name, "rpdo");
   ASSERT_EQ(plugin_->sm_configs_[2].watchdog, EC_WD_ENABLE);
+}
+
+// A slave with one channel reading its factor from the drive, as CiA-402 0x6078 would: current in
+// thousandths of the rated current held in 0x6075, in mA. `FALLBACK` is replaced per test.
+const char factor_from_sdo_slave_config[] =
+  R"(
+vendor_id: 0x00000011
+product_id: 0x07030924
+tpdo:
+  - index: 0x1a00
+    channels:
+      - {index: 0x6078, sub_index: 0, type: int16, state_interface: current, FALLBACK
+         factor_from_sdo: {index: 0x6075, sub_index: 0, type: uint32, scale: 1.0e-6}}
+sm:
+  - {index: 3, type: input, pdo: tpdo, watchdog: disable}
+)";
+
+std::string factor_from_sdo_config(const std::string & fallback)
+{
+  std::string config(factor_from_sdo_slave_config);
+  config.replace(config.find("FALLBACK"), std::string("FALLBACK").size(), fallback);
+  return config;
+}
+
+TEST_F(GenericEcSlaveTest, ResolveSdoFactorFromDrive)
+{
+  SetUp();
+  ASSERT_TRUE(plugin_->setup_from_config(YAML::Load(factor_from_sdo_config(""))));
+
+  const auto read_sdo =
+    [](uint16_t index, uint8_t sub_index, const std::string & data_type, double * value) {
+      EXPECT_EQ(index, 0x6075);
+      EXPECT_EQ(sub_index, 0);
+      EXPECT_EQ(data_type, "uint32");
+      *value = 10000.0;  // a rated current in mA
+      return true;
+    };
+  ASSERT_TRUE(plugin_->resolve_sdo_factors(read_sdo));
+
+  ethercat_interface::EcPdoSingleInterfaceChannelManager * channel = nullptr;
+  for (auto * candidate : plugin_->pdo_channels_info_) {
+    if (candidate->index == 0x6078) {
+      channel =
+        static_cast<ethercat_interface::EcPdoSingleInterfaceChannelManager *>(candidate);
+    }
+  }
+  ASSERT_NE(channel, nullptr);
+  ASSERT_DOUBLE_EQ(channel->factor, 0.01);
+}
+
+TEST_F(GenericEcSlaveTest, ResolveSdoFactorKeepsLiteralOnFailedRead)
+{
+  SetUp();
+  ASSERT_TRUE(plugin_->setup_from_config(YAML::Load(factor_from_sdo_config("factor: 0.05,"))));
+
+  const auto failing_read =
+    [](uint16_t, uint8_t, const std::string &, double *) {return false;};
+  ASSERT_TRUE(plugin_->resolve_sdo_factors(failing_read));
+
+  ethercat_interface::EcPdoSingleInterfaceChannelManager * channel = nullptr;
+  for (auto * candidate : plugin_->pdo_channels_info_) {
+    if (candidate->index == 0x6078) {
+      channel =
+        static_cast<ethercat_interface::EcPdoSingleInterfaceChannelManager *>(candidate);
+    }
+  }
+  ASSERT_NE(channel, nullptr);
+  ASSERT_DOUBLE_EQ(channel->factor, 0.05);
+}
+
+// Without a literal the channel would be left at the default factor of 1, publishing raw
+// thousandths of rated current under an interface that claims amperes. The caller has to be told.
+TEST_F(GenericEcSlaveTest, ResolveSdoFactorFailsWithoutFallback)
+{
+  SetUp();
+  ASSERT_TRUE(plugin_->setup_from_config(YAML::Load(factor_from_sdo_config(""))));
+
+  const auto failing_read =
+    [](uint16_t, uint8_t, const std::string &, double *) {return false;};
+  ASSERT_FALSE(plugin_->resolve_sdo_factors(failing_read));
+}
+
+// A drive reporting a zero rating would turn every reading into zero, which looks like an idle
+// motor.
+TEST_F(GenericEcSlaveTest, ResolveSdoFactorRejectsZero)
+{
+  SetUp();
+  ASSERT_TRUE(plugin_->setup_from_config(YAML::Load(factor_from_sdo_config(""))));
+
+  const auto zero_read =
+    [](uint16_t, uint8_t, const std::string &, double * value) {
+      *value = 0.0;
+      return true;
+    };
+  ASSERT_FALSE(plugin_->resolve_sdo_factors(zero_read));
+}
+
+// A malformed source is a config mistake. It fails resolution even beside a literal factor, and the
+// drive is never asked, since there is no well-formed request to send.
+TEST_F(GenericEcSlaveTest, ResolveSdoFactorRejectsInvalidSource)
+{
+  SetUp();
+  const char invalid_config[] =
+    R"(
+vendor_id: 0x00000011
+product_id: 0x07030924
+tpdo:
+  - index: 0x1a00
+    channels:
+      - {index: 0x6078, sub_index: 0, type: int16, state_interface: current, factor: 0.05,
+         factor_from_sdo: {index: 0x6075, scale: 1.0e-6}}
+sm:
+  - {index: 3, type: input, pdo: tpdo, watchdog: disable}
+)";
+  plugin_->setup_from_config(YAML::Load(invalid_config));
+
+  bool asked = false;
+  const auto read_sdo =
+    [&asked](uint16_t, uint8_t, const std::string &, double * value) {
+      asked = true;
+      *value = 10000.0;
+      return true;
+    };
+  ASSERT_FALSE(plugin_->resolve_sdo_factors(read_sdo));
+  ASSERT_FALSE(asked);
+}
+
+// Resolution runs on every activation. A read that fails on the second must fall back on the
+// config's literal, not on what the first read, which could have come from a drive that has since
+// been swapped.
+TEST_F(GenericEcSlaveTest, ResolveSdoFactorFallsBackOnLiteralAfterEarlierRead)
+{
+  SetUp();
+  ASSERT_TRUE(plugin_->setup_from_config(YAML::Load(factor_from_sdo_config("factor: 0.05,"))));
+
+  ethercat_interface::EcPdoSingleInterfaceChannelManager * channel = nullptr;
+  for (auto * candidate : plugin_->pdo_channels_info_) {
+    if (candidate->index == 0x6078) {
+      channel =
+        static_cast<ethercat_interface::EcPdoSingleInterfaceChannelManager *>(candidate);
+    }
+  }
+  ASSERT_NE(channel, nullptr);
+
+  const auto first_activation =
+    [](uint16_t, uint8_t, const std::string &, double * value) {
+      *value = 10000.0;
+      return true;
+    };
+  ASSERT_TRUE(plugin_->resolve_sdo_factors(first_activation));
+  ASSERT_DOUBLE_EQ(channel->factor, 0.01);
+
+  const auto second_activation =
+    [](uint16_t, uint8_t, const std::string &, double *) {return false;};
+  ASSERT_TRUE(plugin_->resolve_sdo_factors(second_activation));
+  ASSERT_DOUBLE_EQ(channel->factor, 0.05);
 }

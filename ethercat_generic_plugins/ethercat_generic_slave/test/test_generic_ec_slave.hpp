@@ -36,6 +36,12 @@ class FriendGenericEcSlave : public ethercat_generic_plugins::GenericEcSlave
   FRIEND_TEST(GenericEcSlaveTest, EcWriteRPDODefaultValue);
   FRIEND_TEST(GenericEcSlaveTest, SlaveSetupSDOConfig);
   FRIEND_TEST(GenericEcSlaveTest, SlaveSetupSyncManagerConfig);
+  FRIEND_TEST(GenericEcSlaveTest, ResolveSdoFactorFromDrive);
+  FRIEND_TEST(GenericEcSlaveTest, ResolveSdoFactorKeepsLiteralOnFailedRead);
+  FRIEND_TEST(GenericEcSlaveTest, ResolveSdoFactorFailsWithoutFallback);
+  FRIEND_TEST(GenericEcSlaveTest, ResolveSdoFactorRejectsZero);
+  FRIEND_TEST(GenericEcSlaveTest, ResolveSdoFactorRejectsInvalidSource);
+  FRIEND_TEST(GenericEcSlaveTest, ResolveSdoFactorFallsBackOnLiteralAfterEarlierRead);
 };
 
 class GenericEcSlaveTest : public ::testing::Test

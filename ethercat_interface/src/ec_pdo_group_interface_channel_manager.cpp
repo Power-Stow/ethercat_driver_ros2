@@ -218,6 +218,18 @@ bool CLASSM::load_from_config(YAML::Node channel_config)
     std::cerr << "missing channel index info" << std::endl;
   }
 
+  // A grouped channel carries one factor per mapped interface, and a single rating read from the
+  // drive does not say which of them it belongs to. Recorded as configured but never valid, rather
+  // than simply not parsed: this function's result is not acted on, so an ignored key would leave
+  // every interface on its default factor, and resolution fails the bring-up on an invalid source
+  // instead.
+  if (channel_config["factor_from_sdo"]) {
+    factor_source.configured = true;
+    factor_source.valid = false;
+    std::cerr << "channel " << index <<
+      " : factor_from_sdo is not supported on a channel with data_mapping" << std::endl;
+  }
+
   // sub_index
   if (channel_config["sub_index"]) {
     sub_index = channel_config["sub_index"].as<uint8_t>();
