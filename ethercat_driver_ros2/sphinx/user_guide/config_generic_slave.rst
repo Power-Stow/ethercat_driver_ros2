@@ -135,9 +135,10 @@ interface that claims to be converted. A malformed :code:`factor_from_sdo` refus
 beside a literal :code:`factor`, since it is a mistake in the config rather than a drive that cannot be
 reached.
 
-.. note:: Vendors do not all follow the standard reference. A drive whose torque actual value is in
-   thousandths of its *peak* torque rather than of :code:`0x6076` needs a literal :code:`factor`
-   instead, taken from its datasheet.
+.. note:: Not every drive implements the rating object a value is expressed against,
+   :code:`0x6076` in particular being optional, and some document their cyclic values against a
+   different reference. Such channels still need a literal :code:`factor`, taken from the drive's
+   documentation.
 
 .. note:: :code:`factor_from_sdo` is supported on single-interface channels only. On a channel using
    :code:`data_mapping` it refuses the activation rather than being ignored, since a grouped channel has
