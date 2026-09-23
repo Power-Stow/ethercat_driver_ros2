@@ -1156,20 +1156,24 @@ CallbackReturn EthercatDriver::configNetwork()
   // factor.
   size_t unresolved_factor_count = 0;
   for (auto i = 0ul; i < ec_modules_.size(); i++) {
+    // Addressed by alias as well as position: with a nonzero alias the position is relative to it,
+    // and reading by position alone would ask whichever slave sits at that ring position.
+    const uint16_t slave_alias = ec_modules_[i]->alias_;
     const uint16_t slave_position = ec_modules_[i]->position_;
-    const auto read_sdo = [this, slave_position](
+    const auto read_sdo = [this, slave_alias, slave_position](
       uint16_t index, uint8_t sub_index, const std::string & data_type, double * value)
       {
         uint32_t abort_code = 0;
         const int ret = master_->readSlaveSdo(
-          slave_position, index, sub_index, data_type, value, &abort_code);
+          slave_alias, slave_position, index, sub_index, data_type, value, &abort_code);
         if (ret) {
           RCLCPP_ERROR(
             rclcpp::get_logger("EthercatDriver"),
-            "Failed to read SDO index 0x%x subindex 0x%x from position %u for a channel factor: "
-            "%s. CoE abort code 0x%08x",
+            "Failed to read SDO index 0x%x subindex 0x%x from alias %u position %u for a channel "
+            "factor: %s. CoE abort code 0x%08x",
             index,
             sub_index,
+            slave_alias,
             slave_position,
             std::strerror(ret < 0 ? -ret : ret),
             abort_code);

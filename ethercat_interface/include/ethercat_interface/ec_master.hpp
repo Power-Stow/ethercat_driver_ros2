@@ -167,9 +167,14 @@ public:
    *
    * Blocking, and not for the cyclic path: the master state machine processes the request. Used
    * during network configuration to read values the slave config would otherwise have to restate.
+   *
+   * The slave is addressed as in its config, by alias and the position after that alias, and
+   * resolved to its ring position before the upload, which is what IgH addresses an SDO transfer
+   * by. Returns -ENOENT when no slave on the bus answers to that address.
    */
   int readSlaveSdo(
-    uint16_t slave_position,
+    uint16_t alias,
+    uint16_t position,
     uint16_t index,
     uint8_t sub_index,
     const std::string & data_type,
@@ -292,6 +297,14 @@ protected:
   std::chrono::time_point<std::chrono::system_clock> start_t_, curr_t_;
 
   // EtherCAT Control
+
+  /** Resolve a slave's alias and position after that alias to its absolute ring position.
+   *
+   * Follows IgH's own lookup for slave configs: with a nonzero alias, the position counts from the
+   * first slave carrying that alias; with alias zero, the position already is the ring position.
+   * Returns 0 on success, -ENOENT when no slave on the bus matches, or the master query's error.
+   */
+  int resolveRingPosition(uint16_t alias, uint16_t position, uint16_t * ring_position);
 
   /** register a domain of the slave */
   void registerPDOInDomain(
