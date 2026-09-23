@@ -57,7 +57,8 @@ State transitions (master AL state, link, domain working counter, per-slave AL s
 For machine-readable health monitoring, `EcMaster` maintains an optional diagnostics snapshot
 (`ec_diagnostics.hpp`): master/domain state, a lost-frame proxy derived from the domain working
 counter, and per-slave AL status code (ESC register `0x0134`), DC system-time difference (`0x092C`),
-DC propagation delay (`0x0928`), and CiA 402 device state. Collection is opt-in via
+DC propagation delay (`0x0928`), and CiA 402 device state.
+The DC registers are only requested for slaves configured for distributed clocks. Collection is opt-in via
 `setDiagnosticsEnabled(true)` (called before `activate()`, so per-slave register requests can be
 created) and read with the thread-safe `getDiagnostics()`. `ethercat_driver` publishes this snapshot
 to `/diagnostics`; see that package's README.

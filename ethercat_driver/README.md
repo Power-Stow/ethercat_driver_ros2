@@ -46,9 +46,9 @@ Set on the `<hardware>` element of the `ros2_control` system.
 `activation_timeout_s` — budget in seconds for the activation/bring-up loop (default `10.0`); `<= 0` waits indefinitely, and a positive value must exceed the loop's one second initial delay. Time the master spends re-scanning the bus does not count, up to 30 s of it.
 `require_startup_sdo` — refuse the activation when a startup config SDO download fails (default `false`, which brings the bus up anyway).
 `publish_diagnostics` — enable EtherCAT health diagnostics on `/diagnostics` (default `false`).
-`diagnostics_period_s` — diagnostics publish period in seconds (default `1.0`).
+`diagnostics_period_s` — diagnostics publish period in seconds (default `1.0`, valid range `[0.001, 3600]`; out-of-range values fall back to the default).
 `dc_time_diff_warn_ns` — per-slave DC system-time-difference magnitude above which a `WARN` is raised (default `10000`, valid range `[0, 2147483647]`; out-of-range values fall back to the default).
-`dt_tolerated_overrun` — fraction of the expected cycle period a cycle may exceed before it counts as an overrun, i.e. the threshold is `(1 + dt_tolerated_overrun) / control_frequency` (default `0.5`).
+`dt_tolerated_overrun` — fraction of the expected cycle period a cycle may exceed before it counts as an overrun, i.e. the threshold is `(1 + dt_tolerated_overrun) / control_frequency` (default `0.5`; must be finite and `>= 0`, otherwise the default is used).
 
 ### Health diagnostics
 
@@ -64,11 +64,13 @@ since `diagnostic_updater` prefixes each status name with the node name.
 Published `DiagnosticStatus` entries:
 
 - **EtherCAT Master** — `slaves_responding`, `link_up`, master `al_states`, domain working counter and `wc_state` (ZERO/INCOMPLETE/COMPLETE), and a cumulative incomplete-cycle count used as a lost-frame proxy.
-- **EtherCAT Slave: `<name>`** (one per slave) — AL state (INIT/PREOP/SAFEOP/OP), `online`/`operational`, AL status code (ESC register `0x0134`), DC system-time difference (`0x092C`), DC propagation delay (`0x0928`), and CiA 402 device state for drive slaves.
-- **EtherCAT RT Timing** — cyclic-loop period min/mean/max, max jitter, and deadline-overrun count.
+- **EtherCAT Slave: `<name>`** (one per slave) — AL state (INIT/PREOP/SAFEOP/OP), `online`/`operational`, AL status code (ESC register `0x0134`), DC system-time difference (`0x092C`) and DC propagation delay (`0x0928`) for DC-enabled slaves, and CiA 402 device state for drive slaves.
+  If several modules share a configured name, the module index is appended to keep task names unique.
+- **EtherCAT RT Timing** — cyclic-loop period min/mean/max, max jitter (largest deviation from the expected period, early or late), cumulative deadline-overrun count, and overruns since the previous report.
 
-Levels: link down or a slave offline/not-operational or a drive fault → `ERROR`; incomplete working
-counter, high DC clock drift, or loop overruns → `WARN`.
+Levels: link down, a slave offline/not-operational/not configured by the master, or a drive fault → `ERROR`;
+incomplete working counter, high DC clock drift, or loop overruns since the previous report → `WARN`.
+A failure to set up the diagnostics node is logged as an error and activation continues without diagnostics.
 
 The IgH realtime API does not expose Tx-error / lost-frame counters directly, so the master status
 reports the working-counter-derived incomplete-cycle count as a lost-frame proxy.
@@ -78,6 +80,7 @@ Until the first EtherCAT cycle has produced a snapshot, the master and slave sta
 "Waiting for first EtherCAT cycle" rather than a spurious link-down error.
 If a refresh of a register-derived value (AL status code, DC system-time difference) fails,
 that value is omitted until the next successful read instead of reporting the stale sample.
+The DC propagation delay is read once and read again after the slave has been offline.
 
 The publisher starts as soon as the master is activated, i.e. **before** the blocking bring-up loop
 that waits for all slaves to reach OP. This means a slave stuck during initialization (for example

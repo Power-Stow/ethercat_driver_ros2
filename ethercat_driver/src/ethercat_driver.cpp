@@ -391,6 +391,10 @@ const char * al_status_code_to_string(uint16_t code)
   }
 }
 
+/// Accepted range of the diagnostics_period_s hardware parameter, in seconds.
+constexpr double kMinDiagnosticsPeriodS = 1e-3;
+constexpr double kMaxDiagnosticsPeriodS = 3600.0;
+
 /// Build a valid ROS node name from @p prefix and a hardware component name, preserving uniqueness.
 ///
 /// Characters that are not valid in a node name are replaced by '_'.
@@ -1700,7 +1704,9 @@ void EthercatDriver::parseDiagnosticsParameters()
   auto it = info_.hardware_parameters.find("publish_diagnostics");
   if (it != info_.hardware_parameters.end()) {
     std::string value = it->second;
-    std::transform(value.begin(), value.end(), value.begin(), ::tolower);
+    std::transform(
+      value.begin(), value.end(), value.begin(),
+      [](unsigned char c) {return static_cast<char>(std::tolower(c));});
     publish_diagnostics_ = (value == "true" || value == "1");
   }
 
@@ -1708,13 +1714,16 @@ void EthercatDriver::parseDiagnosticsParameters()
   it = info_.hardware_parameters.find("diagnostics_period_s");
   if (it != info_.hardware_parameters.end()) {
     try {
+      // Bounded so the steady-clock conversion in startDiagnostics() neither truncates to zero
+      // (which would publish in a busy loop) nor overflows; NaN fails the comparison as well.
       const auto diagnostics_period_in = std::stod(it->second);
-      if (diagnostics_period_in > 0) {
+      if (diagnostics_period_in >= kMinDiagnosticsPeriodS && diagnostics_period_in <= kMaxDiagnosticsPeriodS) {
         diagnostics_period_s_ = diagnostics_period_in;
       } else {
         RCLCPP_WARN(
           rclcpp::get_logger("EthercatDriver"),
-          "Invalid diagnostics_period_s (%f); using %.2f s.", diagnostics_period_in, diagnostics_period_s_);
+          "Invalid diagnostics_period_s (%f, must be in [%.3f, %.0f]); using %.2f s.",
+          diagnostics_period_in, kMinDiagnosticsPeriodS, kMaxDiagnosticsPeriodS, diagnostics_period_s_);
       }
     } catch (const std::exception & e) {
       RCLCPP_WARN(
@@ -1749,7 +1758,16 @@ void EthercatDriver::parseDiagnosticsParameters()
   it = info_.hardware_parameters.find("dt_tolerated_overrun");
   if (it != info_.hardware_parameters.end()) {
     try {
-      dt_tolerated_overrun_ = std::stod(it->second);
+      // NaN would hide every overrun and a negative value would count nominal cycles as overruns.
+      const double dt_tolerated_overrun_in = std::stod(it->second);
+      if (std::isfinite(dt_tolerated_overrun_in) && dt_tolerated_overrun_in >= 0.0) {
+        dt_tolerated_overrun_ = dt_tolerated_overrun_in;
+      } else {
+        RCLCPP_WARN(
+          rclcpp::get_logger("EthercatDriver"),
+          "Invalid dt_tolerated_overrun (%f, must be finite and >= 0); using %.2f.",
+          dt_tolerated_overrun_in, dt_tolerated_overrun_);
+      }
     } catch (const std::exception & e) {
       RCLCPP_WARN(
         rclcpp::get_logger("EthercatDriver"),
@@ -1770,12 +1788,16 @@ void EthercatDriver::updateTimingStatistics()
       (control_frequency_ > 0.0) ? (1.0 / control_frequency_) : 0.0;
 
     const std::lock_guard<std::mutex> lock(timing_mutex_);
+    // Jitter is the deviation from the expected period in either direction (early or late).
+    const double jitter_s = (expected_period_s > 0.0) ? std::abs(dt - expected_period_s) : 0.0;
     if (timing_sample_count_ == 0) {
       timing_period_min_s_ = dt;
       timing_period_max_s_ = dt;
+      timing_jitter_max_s_ = jitter_s;
     } else {
       timing_period_min_s_ = std::min(timing_period_min_s_, dt);
       timing_period_max_s_ = std::max(timing_period_max_s_, dt);
+      timing_jitter_max_s_ = std::max(timing_jitter_max_s_, jitter_s);
     }
     timing_period_sum_s_ += dt;
     ++timing_sample_count_;
@@ -1804,34 +1826,59 @@ void EthercatDriver::startDiagnostics()
     timing_period_max_s_ = 0.0;
     timing_period_mean_s_ = 0.0;
     timing_period_sum_s_ = 0.0;
+    timing_jitter_max_s_ = 0.0;
     timing_sample_count_ = 0;
     timing_overrun_count_ = 0;
   }
+  // Only touched by the publisher thread, which is not running yet.
+  timing_overrun_count_reported_ = 0;
 
   // Derive the node name and hardware ID from the hardware component name so multiple driver instances
   // in one controller manager publish distinguishable statuses (the updater prefixes each status name
   // with the node name).
-  diagnostics_node_ =
-    std::make_shared<rclcpp::Node>(make_unique_node_name("ethercat_diagnostics_", info_.name));
-  diagnostics_updater_ =
-    std::make_unique<diagnostic_updater::Updater>(diagnostics_node_, diagnostics_period_s_);
-  diagnostics_updater_->setHardwareID(info_.name);
+  // Diagnostics are optional, so a failure to set them up is logged rather than failing activation.
+  try {
+    diagnostics_node_ =
+      std::make_shared<rclcpp::Node>(make_unique_node_name("ethercat_diagnostics_", info_.name));
+    diagnostics_updater_ =
+      std::make_unique<diagnostic_updater::Updater>(diagnostics_node_, diagnostics_period_s_);
+    diagnostics_updater_->setHardwareID(info_.name);
 
-  diagnostics_updater_->add("EtherCAT Master", this, &EthercatDriver::produceMasterDiagnostics);
-  diagnostics_updater_->add("EtherCAT RT Timing", this, &EthercatDriver::produceTimingDiagnostics);
+    diagnostics_updater_->add("EtherCAT Master", this, &EthercatDriver::produceMasterDiagnostics);
+    diagnostics_updater_->add("EtherCAT RT Timing", this, &EthercatDriver::produceTimingDiagnostics);
 
-  for (size_t i = 0; i < ec_modules_.size(); ++i) {
-    std::string name = "EtherCAT Slave " + std::to_string(i);
-    if (i < ec_module_parameters_.size()) {
-      const auto name_it = ec_module_parameters_[i].find("name");
-      if (name_it != ec_module_parameters_[i].end()) {
-        name = "EtherCAT Slave: " + name_it->second;
+    const auto module_name = [this](size_t index) -> const std::string * {
+        if (index >= ec_module_parameters_.size()) {
+          return nullptr;
+        }
+        const auto name_it = ec_module_parameters_[index].find("name");
+        return (name_it != ec_module_parameters_[index].end()) ? &name_it->second : nullptr;
+      };
+    for (size_t i = 0; i < ec_modules_.size(); ++i) {
+      std::string name = "EtherCAT Slave " + std::to_string(i);
+      if (const std::string * configured_name = module_name(i)) {
+        name = "EtherCAT Slave: " + *configured_name;
+        // Keep task names unique when several modules share a configured name.
+        for (size_t j = 0; j < ec_modules_.size(); ++j) {
+          const std::string * other_name = module_name(j);
+          if (j != i && other_name != nullptr && *other_name == *configured_name) {
+            name += " (" + std::to_string(i) + ")";
+            break;
+          }
+        }
       }
+      diagnostics_updater_->add(
+        name, [this, i](diagnostic_updater::DiagnosticStatusWrapper & stat) {
+          produceSlaveDiagnostics(stat, i);
+        });
     }
-    diagnostics_updater_->add(
-      name, [this, i](diagnostic_updater::DiagnosticStatusWrapper & stat) {
-        produceSlaveDiagnostics(stat, i);
-      });
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(
+      rclcpp::get_logger("EthercatDriver"),
+      "Failed to set up EtherCAT diagnostics (%s); continuing without diagnostics.", e.what());
+    diagnostics_updater_.reset();
+    diagnostics_node_.reset();
+    return;
   }
 
   // The updater has no subscriptions, so rather than spin an executor we simply force an
@@ -1921,11 +1968,19 @@ void EthercatDriver::produceSlaveDiagnostics(
     stat.summary(DiagnosticStatus::OK, "Waiting for first EtherCAT cycle");
     return;
   }
-  if (slave_index >= diag.slaves.size()) {
-    stat.summary(DiagnosticStatus::WARN, "Slave diagnostics not yet available");
+  // The master skips slaves it failed to configure, so the snapshot order need not match
+  // ec_modules_; look the slave up by its bus address instead of by index.
+  const auto & ec_module = ec_modules_[slave_index];
+  const auto slave_it = std::find_if(
+    diag.slaves.begin(), diag.slaves.end(),
+    [&ec_module](const ethercat_interface::SlaveDiagnostics & candidate) {
+      return candidate.alias == ec_module->alias_ && candidate.position == ec_module->position_;
+    });
+  if (slave_it == diag.slaves.end()) {
+    stat.summary(DiagnosticStatus::ERROR, "Slave not configured by the EtherCAT master");
     return;
   }
-  const auto & s = diag.slaves[slave_index];
+  const auto & s = *slave_it;
 
   stat.add("alias", s.alias);
   stat.add("position", s.position);
@@ -1978,6 +2033,7 @@ void EthercatDriver::produceTimingDiagnostics(
   double period_min_s = 0.0;
   double period_max_s = 0.0;
   double period_mean_s = 0.0;
+  double jitter_max_s = 0.0;
   uint64_t sample_count = 0;
   uint64_t overrun_count = 0;
   {
@@ -1986,6 +2042,7 @@ void EthercatDriver::produceTimingDiagnostics(
     period_min_s = timing_period_min_s_;
     period_max_s = timing_period_max_s_;
     period_mean_s = timing_period_mean_s_;
+    jitter_max_s = timing_jitter_max_s_;
     sample_count = timing_sample_count_;
     overrun_count = timing_overrun_count_;
   }
@@ -1999,11 +2056,16 @@ void EthercatDriver::produceTimingDiagnostics(
   stat.add("period_mean_ms", period_mean_s * 1e3);
   stat.add("period_min_ms", period_min_s * 1e3);
   stat.add("period_max_ms", period_max_s * 1e3);
-  stat.add("jitter_max_ms", (period_max_s - expected_period_s) * 1e3);
+  stat.add("jitter_max_ms", jitter_max_s * 1e3);
   stat.add("overrun_count", overrun_count);
   stat.add("sample_count", sample_count);
 
-  if (overrun_count > 0) {
+  // Warn only on overruns since the previous publication, so a single transient overrun does not
+  // latch the status at WARN for the rest of the activation; the cumulative count stays published.
+  const uint64_t new_overrun_count = overrun_count - timing_overrun_count_reported_;
+  timing_overrun_count_reported_ = overrun_count;
+  stat.add("overruns_since_last_report", new_overrun_count);
+  if (new_overrun_count > 0) {
     stat.summary(DiagnosticStatus::WARN, "Cyclic loop deadline overruns detected");
   } else {
     stat.summary(DiagnosticStatus::OK, "Cyclic loop timing nominal");

@@ -268,8 +268,11 @@ protected:
   double timing_period_max_s_ = 0.0;
   double timing_period_mean_s_ = 0.0;
   double timing_period_sum_s_ = 0.0;
+  double timing_jitter_max_s_ = 0.0;  //< largest |period - expected period| (early or late)
   uint64_t timing_sample_count_ = 0;
   uint64_t timing_overrun_count_ = 0;
+  /** overrun count at the previous publication; accessed only by the diagnostics publisher thread */
+  uint64_t timing_overrun_count_reported_ = 0;
   bool timing_last_valid_ = false;
   struct timespec timing_last_ts_ = {};
 };

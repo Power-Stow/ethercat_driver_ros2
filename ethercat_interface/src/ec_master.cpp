@@ -707,10 +707,14 @@ void EcMaster::createRegisterRequests()
       continue;
     }
     slave.al_status_reg = ecrt_slave_config_create_reg_request(slave.config, 2);
-    slave.dc_time_diff_reg = ecrt_slave_config_create_reg_request(slave.config, 4);
-    slave.dc_delay_reg = ecrt_slave_config_create_reg_request(slave.config, 4);
-    if (slave.al_status_reg == nullptr || slave.dc_time_diff_reg == nullptr ||
-      slave.dc_delay_reg == nullptr)
+    // The DC registers are only meaningful for slaves configured for distributed clocks.
+    const bool uses_dc = slave.slave != nullptr && slave.slave->assign_activate_dc_sync() != 0;
+    if (uses_dc) {
+      slave.dc_time_diff_reg = ecrt_slave_config_create_reg_request(slave.config, 4);
+      slave.dc_delay_reg = ecrt_slave_config_create_reg_request(slave.config, 4);
+    }
+    if (slave.al_status_reg == nullptr ||
+      (uses_dc && (slave.dc_time_diff_reg == nullptr || slave.dc_delay_reg == nullptr)))
     {
       printWarning("Diagnostics: failed to create a register request for a slave.");
     }
@@ -750,7 +754,11 @@ void EcMaster::serviceRegisterRequests()
       }
     }
 
-    // DC propagation delay (ESC register 0x0928, 4 bytes): static after DC init, read once.
+    // DC propagation delay (ESC register 0x0928, 4 bytes): static after DC init, so it is read
+    // once, and read again after the slave has been offline since the topology may have changed.
+    if (!slave.config_state.online) {
+      slave.dc_propagation_delay_valid = false;
+    }
     if (slave.dc_delay_reg != nullptr && !slave.dc_propagation_delay_valid) {
       const ec_request_state_t state = ecrt_reg_request_state(slave.dc_delay_reg);
       if (state == EC_REQUEST_SUCCESS) {
