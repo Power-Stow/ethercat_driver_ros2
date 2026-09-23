@@ -59,7 +59,7 @@ public:
   virtual void start_wind_down(double /*timeout_s*/) {}
   /** True once the slave is de-energised and the cyclic exchange may stop.
    *  Slaves with nothing to wind down report completion immediately. */
-  virtual bool wind_down_complete() {return true;}
+  virtual bool wind_down_complete() const noexcept {return true;}
   /** Discard any state left by a previous wind-down, so the slave can be commanded normally
    *  again. The driver calls this on every activation, because the same slave instances are
    *  reused across a deactivate/activate cycle. */

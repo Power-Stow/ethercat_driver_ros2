@@ -128,7 +128,7 @@ protected:
    *
    * @return Comma separated `name (alias N position N)` entries, or `none` if every module is up.
    */
-  std::string pendingModuleDescription();
+  std::string pendingModuleDescription() const;
 
   /** @brief Load transfer config YAML file
    * One use case is to load transfers for FailSafe Over EtherCAT Safety

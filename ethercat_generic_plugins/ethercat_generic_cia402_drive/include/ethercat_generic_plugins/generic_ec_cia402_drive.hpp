@@ -59,7 +59,7 @@ public:
 
   /** True once Disable Voltage has gone out and the drive reads as de-energised.
    *  Judged on the status word alone, never on the cached operational flag. */
-  virtual bool wind_down_complete();
+  virtual bool wind_down_complete() const noexcept;
 
   /** Release the control word and the other command channels, so the drive can be taken back up
    *  to Operation Enabled. Called on activation: the same plugin instance is reused across a
@@ -81,7 +81,7 @@ public:
   /** The error code the drive reported for the fault it is in, or the last one it was in.
    *  Survives the reset that clears 0x603F on the drive itself, so a fault that was acknowledged
    *  automatically still leaves something to read. Zero until the drive has faulted once. */
-  uint16_t last_fault_error_code() const {return last_fault_error_code_;}
+  uint16_t last_fault_error_code() const noexcept {return last_fault_error_code_;}
 
 protected:
   uint32_t counter_ = 0;
@@ -149,7 +149,7 @@ protected:
   /** returns the control word that will take device from state to next desired state */
   uint16_t transition(DeviceState state, uint16_t control_word);
   /** returns the control word that walks the device down towards Switch On Disabled */
-  uint16_t wind_down_transition(DeviceState state);
+  uint16_t wind_down_transition(DeviceState state) const noexcept;
   /** Mark the wind-down complete once Disable Voltage has gone out and the state read on this cycle
    *  is one with the drive function disabled. Called at the end of each cycle, after updateState(). */
   void update_wind_down_complete();

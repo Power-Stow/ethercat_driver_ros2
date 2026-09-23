@@ -1124,7 +1124,7 @@ CallbackReturn EthercatDriver::on_activate(
   return CallbackReturn::SUCCESS;
 }
 
-std::string EthercatDriver::pendingModuleDescription()
+std::string EthercatDriver::pendingModuleDescription() const
 {
   std::string pending;
   for (size_t i = 0; i < ec_modules_.size(); ++i) {

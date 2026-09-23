@@ -60,7 +60,7 @@ constexpr uint16_t CONTROL_WORD_DISABLE_VOLTAGE = 0b00000000;
 /// True for the CiA-402 states in which the drive function is disabled, so that the frames may stop.
 /// Quick Stop Active and Fault Reaction Active are still decelerating under power, and an undefined
 /// or not-yet-read state says nothing about the power stage, so none of those qualify.
-bool is_wind_down_safe_state(DeviceState state)
+constexpr bool is_wind_down_safe_state(DeviceState state) noexcept
 {
   switch (state) {
     case STATE_NOT_READY_TO_SWITCH_ON:
@@ -801,7 +801,7 @@ void EcCiA402Drive::start_wind_down(double timeout_s)
     position_);
 }
 
-bool EcCiA402Drive::wind_down_complete()
+bool EcCiA402Drive::wind_down_complete() const noexcept
 {
   // Deliberately not short-cut on !is_operational_, which the master refreshes only every few
   // cycles: a drive can reach OP and Operation Enabled in between. A drive that never got that far
@@ -854,7 +854,7 @@ void EcCiA402Drive::reset_wind_down()
 }
 
 /** returns the control word that walks the device down towards Switch On Disabled */
-uint16_t EcCiA402Drive::wind_down_transition(DeviceState state)
+uint16_t EcCiA402Drive::wind_down_transition(DeviceState state) const noexcept
 {
   switch (state) {
     case STATE_OPERATION_ENABLED:
