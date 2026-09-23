@@ -41,7 +41,7 @@ class FriendEcCiA402Drive : public ethercat_generic_plugins::EcCiA402Drive
   FRIEND_TEST(EcCiA402DriveTest, JointOffsetCompensatesCspCommandPosition);
   FRIEND_TEST(EcCiA402DriveTest, JointOffsetStartupWrapDisabledKeepsLegacyBehavior);
   FRIEND_TEST(EcCiA402DriveTest, JointOffsetStartupWrapEnabledAdjustsFirstSampleOnly);
-  FRIEND_TEST(EcCiA402DriveTest, JointOffsetStartupWrapWaitsForOperationalState);
+  FRIEND_TEST(EcCiA402DriveTest, JointOffsetStartupWrapWaitsForSlaveData);
 };
 
 class EcCiA402DriveTest : public ::testing::Test
