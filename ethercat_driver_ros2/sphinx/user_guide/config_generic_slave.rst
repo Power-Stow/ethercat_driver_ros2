@@ -127,7 +127,8 @@ holds, and a config that restates it is silently wrong on a drive whose rating d
 The read happens once, in :code:`configNetwork()`, after the startup SDOs have been downloaded and
 before the master is activated, so no value is ever converted with the default factor. Supported types
 are the integer types, :code:`float`/:code:`real32` and :code:`double`/:code:`real64`; any other
-type makes the :code:`factor_from_sdo` malformed.
+type makes the :code:`factor_from_sdo` malformed. An upload whose size does not match the type,
+such as a 4-byte object read as :code:`uint16`, counts as a failed read rather than being truncated.
 
 A literal :code:`factor` on the same channel is the fallback for a drive that cannot be read, and the
 driver logs that it fell back. Without one, an unreadable rating **refuses the activation**, whatever

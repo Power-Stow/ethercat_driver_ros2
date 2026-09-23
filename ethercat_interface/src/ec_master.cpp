@@ -310,7 +310,7 @@ int EcMaster::readSlaveSdo(
     return ret;
   }
   if (!SdoConfigEntry::buffer_read(buffer, result_size, data_type, value)) {
-    printWarning("Read SDO. Unsupported data type or short read.");
+    printWarning("Read SDO. Unsupported data type, or upload size does not match it.");
     return -1;
   }
   return 0;

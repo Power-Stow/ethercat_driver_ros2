@@ -173,6 +173,17 @@ TEST(TestSdoConfigEntry, BufferReadRejectsShortAndUnknown)
   ASSERT_FALSE(ethercat_interface::SdoConfigEntry::buffer_read(buffer, 4, "uint32", nullptr));
 }
 
+// An upload wider than the configured type fails too. Decoding only its low-order bytes would give a
+// plausible wrong factor, and a successful read would bypass any literal fallback.
+TEST(TestSdoConfigEntry, BufferReadRejectsOversizedUpload)
+{
+  uint8_t buffer[8] = {0};
+  double value = 0.0;
+  EC_WRITE_U32(buffer, 70000);
+  ASSERT_FALSE(ethercat_interface::SdoConfigEntry::buffer_read(buffer, 4, "uint16", &value));
+  ASSERT_FALSE(ethercat_interface::SdoConfigEntry::buffer_read(buffer, 8, "uint32", &value));
+}
+
 TEST(TestEcPdoSingleInterfaceChannelManager, EcReadS16)
 {
   const char channel_config[] =

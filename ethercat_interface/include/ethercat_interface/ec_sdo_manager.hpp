@@ -143,7 +143,9 @@ public:
     return type2bytes(data_type) != 0;
   }
 
-  /// Decode `size` bytes of `buffer` as `data_type`. Returns false for a type this does not handle.
+  /// Decode `size` bytes of `buffer` as `data_type`. Returns false for a type this does not handle,
+  /// or when `size` is not exactly that type's width. A longer upload means the configured type is
+  /// narrower than the object, and its low-order bytes alone would decode to a plausible wrong value.
   static bool buffer_read(
     const uint8_t * buffer, size_t size, const std::string & data_type,
     double * value)
@@ -151,28 +153,28 @@ public:
     if (value == nullptr || buffer == nullptr) {
       return false;
     }
-    if (data_type == "uint8" && size >= 1) {
+    if (data_type == "uint8" && size == 1) {
       *value = static_cast<double>(EC_READ_U8(buffer));
-    } else if (data_type == "int8" && size >= 1) {
+    } else if (data_type == "int8" && size == 1) {
       *value = static_cast<double>(EC_READ_S8(buffer));
-    } else if (data_type == "uint16" && size >= 2) {
+    } else if (data_type == "uint16" && size == 2) {
       *value = static_cast<double>(EC_READ_U16(buffer));
-    } else if (data_type == "int16" && size >= 2) {
+    } else if (data_type == "int16" && size == 2) {
       *value = static_cast<double>(EC_READ_S16(buffer));
-    } else if (data_type == "uint32" && size >= 4) {
+    } else if (data_type == "uint32" && size == 4) {
       *value = static_cast<double>(EC_READ_U32(buffer));
-    } else if (data_type == "int32" && size >= 4) {
+    } else if (data_type == "int32" && size == 4) {
       *value = static_cast<double>(EC_READ_S32(buffer));
-    } else if ((data_type == "float" || data_type == "real32") && size >= 4) {
+    } else if ((data_type == "float" || data_type == "real32") && size == 4) {
       const uint32_t raw = EC_READ_U32(buffer);
       float decoded = 0.0f;
       std::memcpy(&decoded, &raw, sizeof(decoded));
       *value = static_cast<double>(decoded);
-    } else if (data_type == "uint64" && size >= 8) {
+    } else if (data_type == "uint64" && size == 8) {
       *value = static_cast<double>(EC_READ_U64(buffer));
-    } else if (data_type == "int64" && size >= 8) {
+    } else if (data_type == "int64" && size == 8) {
       *value = static_cast<double>(EC_READ_S64(buffer));
-    } else if ((data_type == "double" || data_type == "real64") && size >= 8) {
+    } else if ((data_type == "double" || data_type == "real64") && size == 8) {
       const uint64_t raw = EC_READ_U64(buffer);
       double decoded = 0.0;
       std::memcpy(&decoded, &raw, sizeof(decoded));
