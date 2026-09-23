@@ -83,6 +83,8 @@ back the way the slave config had it. The driver calls it on activation, because
 instance outlives a deactivate/activate cycle: without the reset the drive would be commanded
 down on every cycle of the next run, and no automatic transition could take it back up to
 Operation Enabled.
+It also re-arms `reset_fault_on_startup` on every activation, with or without a prior wind-down,
+so a drive that comes back up in Fault is cleared the same way it is on a fresh start.
 
 ## Joint Offset Startup Wrap
 

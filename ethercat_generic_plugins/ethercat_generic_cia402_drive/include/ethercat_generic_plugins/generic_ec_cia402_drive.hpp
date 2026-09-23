@@ -63,7 +63,7 @@ public:
   /** Release the control word and the other command channels, so the drive can be taken back up
    *  to Operation Enabled. Called on activation: the same plugin instance is reused across a
    *  deactivate/activate cycle, and a wind-down left in place would keep commanding the drive
-   *  down forever. */
+   *  down forever. Also re-arms the startup fault reset, which is per activation. */
   virtual void reset_wind_down();
 
   /// @brief Setup CSV dumping internals from plugin parameters.
