@@ -116,6 +116,8 @@ protected:
   bool joint_offset_startup_wrap_applied_ = false;
   bool wind_down_requested_ = false;
   bool wind_down_complete_ = true;
+  /** Whether the control word written on this cycle's RPDO pass was Disable Voltage. */
+  bool wind_down_disable_voltage_sent_ = false;
   bool quick_stop_supported_ = false;
   uint32_t wind_down_cycles_ = 0;
   uint32_t quick_stop_hold_cycles_ = 0;
@@ -146,6 +148,9 @@ protected:
   uint16_t transition(DeviceState state, uint16_t control_word);
   /** returns the control word that walks the device down towards Switch On Disabled */
   uint16_t wind_down_transition(DeviceState state);
+  /** Mark the wind-down complete once Disable Voltage has gone out and the state read on this cycle
+   *  is one with the drive function disabled. Called at the end of each cycle, after updateState(). */
+  void update_wind_down_complete();
   /** set up of the drive configuration from yaml node*/
   bool setup_from_config(YAML::Node drive_config);
   /** set up of the drive configuration from yaml file*/

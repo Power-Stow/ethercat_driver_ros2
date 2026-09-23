@@ -74,6 +74,14 @@ and `0x6085` are configured, and verify the behaviour under motion on a test rig
 - a standing fault is deliberately not reset: clearing it on the way out would hide it from the
   next start-up.
 
+The wind-down is complete at the end of a cycle in which Disable Voltage went out,
+and the status word read on that same cycle shows a state with the drive function disabled:
+Not Ready to Switch On, Switch On Disabled, Ready to Switch On, Switched On or Fault.
+The control word is chosen from the previous cycle's state, so a drive that faulted in between is
+judged on its Fault Reaction Active rather than released while it still decelerates.
+Quick Stop Active, Fault Reaction Active and a status word that decodes to no CiA-402 state keep the
+frames going until a known disabled state is read, or the caller's timeout expires.
+
 A drive that never became operational reports the wind-down complete immediately.
 
 ### Reactivation

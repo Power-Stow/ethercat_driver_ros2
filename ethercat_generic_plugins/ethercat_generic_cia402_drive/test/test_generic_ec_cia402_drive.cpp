@@ -539,6 +539,7 @@ TEST_F(EcCiA402DriveTest, WindDownDisablesVoltageWhenTheQuickStopHoldElapses)
   plugin_->processData(4, domain_address);
 
   EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  plugin_->update_wind_down_complete();
   EXPECT_FALSE(plugin_->wind_down_complete());
 }
 
@@ -562,6 +563,7 @@ TEST_F(EcCiA402DriveTest, WindDownDisablesVoltageOnceTheDriveIsSwitchedOn)
   // Switched On has the drive function disabled, so the wind-down is done: Disable Voltage goes
   // out on this same cycle and the drive carries it down to Switch On Disabled by itself.
   EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  plugin_->update_wind_down_complete();
   EXPECT_TRUE(plugin_->wind_down_complete());
 }
 
@@ -585,6 +587,7 @@ TEST_F(EcCiA402DriveTest, WindDownCompletesWhenTheDriveParksInReadyToSwitchOn)
   // A drive can park here rather than in Switch On Disabled while its DC bus is live. Waiting for
   // a transition it never makes would cost the caller its whole timeout for nothing.
   EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  plugin_->update_wind_down_complete();
   EXPECT_TRUE(plugin_->wind_down_complete());
 }
 
@@ -629,6 +632,7 @@ TEST_F(EcCiA402DriveTest, WindDownCompletesOnceTheDriveIsDeEnergised)
   plugin_->processData(4, domain_address);
 
   EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  plugin_->update_wind_down_complete();
   EXPECT_TRUE(plugin_->wind_down_complete());
 }
 
@@ -695,6 +699,7 @@ TEST_F(EcCiA402DriveTest, WindDownWaitsOutTheFaultReaction)
   // The drive is still decelerating under power, so releasing the master now would stop the frames
   // on a moving axis.
   EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  plugin_->update_wind_down_complete();
   EXPECT_FALSE(plugin_->wind_down_complete());
 
   // The reaction ends in Fault on the drive's own account, and there the power stage is off.
@@ -703,6 +708,63 @@ TEST_F(EcCiA402DriveTest, WindDownWaitsOutTheFaultReaction)
 
   // Still no fault reset: the standing fault has to survive into the next start-up.
   EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  plugin_->update_wind_down_complete();
+  EXPECT_TRUE(plugin_->wind_down_complete());
+}
+
+TEST_F(EcCiA402DriveTest, WindDownJudgesCompletionOnTheStateReadThisCycle)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_SWITCH_ON;
+
+  plugin_->start_wind_down(0.01, 1.0);
+
+  // The control word is chosen from last cycle's state, which had the drive function disabled.
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x0007);
+  plugin_->processData(4, domain_address);
+  ASSERT_EQ(EC_READ_U16(domain_address), 0x0000);
+
+  // The status word read later in the same cycle shows the drive has faulted since, and the fault
+  // reaction is still decelerating under power.
+  plugin_->state_ = STATE_FAULT_REACTION_ACTIVE;
+  plugin_->update_wind_down_complete();
+
+  EXPECT_FALSE(plugin_->wind_down_complete());
+}
+
+TEST_F(EcCiA402DriveTest, WindDownDoesNotCompleteInAnUndefinedState)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_UNDEFINED;
+
+  plugin_->start_wind_down(0.01, 1.0);
+
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x000F);
+  plugin_->processData(4, domain_address);
+
+  // Disable Voltage is still the right command, but a status word that decodes to no CiA-402 state
+  // says nothing about the power stage, so the frames keep going until a known state is read.
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  plugin_->update_wind_down_complete();
+  EXPECT_FALSE(plugin_->wind_down_complete());
+
+  plugin_->state_ = STATE_SWITCH_ON_DISABLED;
+  plugin_->processData(4, domain_address);
+  plugin_->update_wind_down_complete();
   EXPECT_TRUE(plugin_->wind_down_complete());
 }
 

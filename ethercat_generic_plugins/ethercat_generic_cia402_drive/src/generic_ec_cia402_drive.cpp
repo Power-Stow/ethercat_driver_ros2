@@ -56,6 +56,23 @@ constexpr uint16_t CONTROL_WORD_QUICK_STOP = 0b00001011;
 /// energised state.
 constexpr uint16_t CONTROL_WORD_DISABLE_VOLTAGE = 0b00000000;
 
+/// True for the CiA-402 states in which the drive function is disabled, so that the frames may stop.
+/// Quick Stop Active and Fault Reaction Active are still decelerating under power, and an undefined
+/// or not-yet-read state says nothing about the power stage, so none of those qualify.
+bool is_wind_down_safe_state(DeviceState state)
+{
+  switch (state) {
+    case STATE_NOT_READY_TO_SWITCH_ON:
+    case STATE_SWITCH_ON_DISABLED:
+    case STATE_READY_TO_SWITCH_ON:
+    case STATE_SWITCH_ON:
+    case STATE_FAULT:
+      return true;
+    default:
+      return false;
+  }
+}
+
 double raw_value_from_channel(const ethercat_interface::EcPdoChannelManager & channel)
 {
   const auto & d = channel.data();
@@ -332,7 +349,9 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
       // The wind-down owns the control word: a fault reset or an automatic transition back up to
       // Operation Enabled would undo the very thing it is trying to achieve, and a control word
       // left behind by a controller that has already stopped must not be replayed either.
-      channel.default_value = wind_down_transition(state_);
+      const uint16_t wind_down_control_word = wind_down_transition(state_);
+      wind_down_disable_voltage_sent_ = wind_down_control_word == CONTROL_WORD_DISABLE_VOLTAGE;
+      channel.default_value = wind_down_control_word;
       channel.override_command = true;
     } else if (is_operational_) {
       if (fault_reset_command_interface_index_ >= 0) {
@@ -506,6 +525,7 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
     publish_last_error_code();
     if (wind_down_requested_ && !wind_down_complete_) {
       ++wind_down_cycles_;
+      update_wind_down_complete();
     }
     dump_cycle_csv_row();
   }
@@ -761,6 +781,7 @@ void EcCiA402Drive::start_wind_down(double cycle_period_s, double timeout_s)
   wind_down_requested_ = true;
   wind_down_cycles_ = 0;
   wind_down_complete_ = false;
+  wind_down_disable_voltage_sent_ = false;
 
   // Half of the budget is spent letting the drive decelerate on its quick stop ramp. Drives whose
   // quick stop option code takes them to Switch On Disabled finish well inside that and end the
@@ -812,6 +833,7 @@ void EcCiA402Drive::reset_wind_down()
 
   wind_down_requested_ = false;
   wind_down_complete_ = true;
+  wind_down_disable_voltage_sent_ = false;
   wind_down_cycles_ = 0;
   quick_stop_hold_cycles_ = 0;
 
@@ -844,15 +866,24 @@ uint16_t EcCiA402Drive::wind_down_transition(DeviceState state)
       // caller's timeout expires has something wrong with it and the warning is earned.
       return CONTROL_WORD_DISABLE_VOLTAGE;
     default:
-      // Every other state has the drive function disabled, which is the whole point of winding
-      // down before the frames stop. Disable Voltage still goes out on this cycle, so the drive
-      // carries that command down to Switch On Disabled by itself; waiting to observe it would
-      // cost the caller its entire timeout on a drive that parks in Ready to Switch On while its
-      // DC bus is live, which some drives do. A standing fault is deliberately not reset:
-      // clearing it on the way out would hide it from the next start-up.
-      wind_down_complete_ = true;
+      // Disable Voltage forces Switch On Disabled from any energised state, so it is the right word
+      // for every other state, an undefined one included. Whether the wind-down is complete is
+      // decided in update_wind_down_complete(), once this cycle's status word has been read. A
+      // standing fault is deliberately not reset: clearing it on the way out would hide it from the
+      // next start-up.
       return CONTROL_WORD_DISABLE_VOLTAGE;
   }
+}
+
+void EcCiA402Drive::update_wind_down_complete()
+{
+  // The control word goes out on the RPDO pass, which comes before the status word is read, so the
+  // state it was chosen from is last cycle's. A drive can have faulted since, and Fault Reaction
+  // Active is still decelerating under power, so completion is judged on the state read now.
+  // Disable Voltage has to have gone out as well: the drive then carries it down to Switch On
+  // Disabled by itself, and waiting to observe that would cost the caller its entire timeout on a
+  // drive that parks in Ready to Switch On while its DC bus is live, which some drives do.
+  wind_down_complete_ = wind_down_disable_voltage_sent_ && is_wind_down_safe_state(state_);
 }
 
 }  // namespace ethercat_generic_plugins
