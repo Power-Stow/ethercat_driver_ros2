@@ -184,10 +184,14 @@ void EcCiA402Drive::latch_fault_error_code()
     last_fault_error_code_ = error_code_;
     last_fault_status_word_ = status_word_;
     fault_error_code_logged_ = false;
-  } else if (last_fault_error_code_ == 0 && error_code_ != 0) {
-    // Drives do not all publish the error code and the fault bit on the same cycle, so the first
-    // non-zero code seen while the fault stands is taken rather than only the one at the edge.
+  } else if (error_code_ != 0 && error_code_ != last_fault_error_code_) {
+    // Drives do not all publish the error code and the fault bit on the same cycle, so the latch
+    // follows the latest non-zero code while the fault stands rather than keeping the one at the
+    // edge. That covers a code that arrives after the fault bit, and a code still cached from the
+    // previous fault when the edge is seen, which would otherwise hide the real one for good. A
+    // changed code is logged again.
     last_fault_error_code_ = error_code_;
+    fault_error_code_logged_ = false;
   }
 
   if (!fault_error_code_logged_ && last_fault_error_code_ != 0) {
@@ -435,23 +439,20 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
     }
   }
 
-  // Everything else the drive is commanded with falls back to its configured default while the
-  // wind-down runs, and whenever the drive is not in Operation Enabled: zero velocity, zero torque, the
-  // mode of operation the drive is already in.
+  // The velocity and torque setpoints fall back to their configured defaults, zero, while the
+  // wind-down runs and whenever the drive is not in Operation Enabled.
   //
   // Assigned every cycle rather than only set, because override_command lives on the channel and outlives
   // the condition that raised it. Setting it on the way up, which every bring-up does before the drive
   // first reaches Operation Enabled, and never clearing it pins the channel to its default for the rest
   // of the session: the drive then ignores its velocity and torque commands for good.
   //
-  // The control word is excluded because the state machine and the wind-down drive it themselves, just
-  // above, and pinning it would strand the drive wherever it happens to be. The target position is
-  // excluded because it assigns its own override from `follow_position_command`, which already carries
-  // both conditions.
-  if (channel.pdo_type == ethercat_interface::RPDO &&
-    channel.index != CiA402D_RPDO_CONTROLWORD &&
-    channel.index != CiA402D_RPDO_POSITION)
-  {
+  // Only the motion setpoints are suppressed. The mode of operation in particular has to reach the
+  // drive before it is enabled, or the automatic transitions enable it in the old mode and the
+  // requested one lands later as an online mode switch; the same goes for any other non-motion RPDO.
+  // The control word is driven by the state machine and the wind-down themselves, just above, and the
+  // target position assigns its own override from `follow_position_command`.
+  if (channel.index == CiA402D_RPDO_VELOCITY || channel.index == CiA402D_RPDO_EFFORT) {
     channel.override_command = wind_down_requested_ || state_ != STATE_OPERATION_ENABLED;
   }
 

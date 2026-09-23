@@ -53,8 +53,8 @@ public:
   /** Start walking the CiA-402 state machine down to Switch On Disabled.
    *  Drives whose slave config sets `quick_stop_supported` are commanded Quick Stop, so they
    *  decelerate on their quick stop ramp; every other drive is disabled, dropping the power stage
-   *  so the axis is held by its brake. While the wind-down runs, every command channel but the
-   *  control word falls back to its configured default. */
+   *  so the axis is held by its brake. While the wind-down runs, the velocity and torque setpoints
+   *  fall back to their configured defaults and the target position to the last read position. */
   virtual void start_wind_down(double timeout_s);
 
   /** True once Disable Voltage has gone out and the drive reads as de-energised.
@@ -107,8 +107,9 @@ protected:
   int fault_reset_command_interface_index_ = -1;
   bool last_fault_reset_command_ = false;
   uint16_t error_code_ = 0;
-  /** Latched at the fault edge rather than read live, because a fault reset clears 0x603F on the
-   *  drive within a cycle or two and an automatic reset gets there before anything can read it. */
+  /** The latest non-zero 0x603F seen while the fault stands, latched rather than read live, because
+   *  a fault reset clears 0x603F on the drive within a cycle or two and an automatic reset gets there
+   *  before anything can read it. */
   uint16_t last_fault_error_code_ = 0;
   uint16_t last_fault_status_word_ = 0;
   bool fault_error_code_logged_ = false;

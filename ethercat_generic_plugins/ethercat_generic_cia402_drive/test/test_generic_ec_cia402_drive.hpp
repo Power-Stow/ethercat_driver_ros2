@@ -61,6 +61,7 @@ class FriendEcCiA402Drive : public ethercat_generic_plugins::EcCiA402Drive
   FRIEND_TEST(EcCiA402DriveTest, FaultStandingAcrossReactivationIsLatchedAfresh);
   FRIEND_TEST(EcCiA402DriveTest, StartupFaultResetLeavesAFaultRaisedDuringBringUp);
   FRIEND_TEST(EcCiA402DriveTest, ResetWindDownDiscardsAnUnconsumedFaultResetRequest);
+  FRIEND_TEST(EcCiA402DriveTest, FaultLatchTakesTheNewCodeWhenItArrivesAfterTheEdge);
 };
 
 class EcCiA402DriveTest : public ::testing::Test

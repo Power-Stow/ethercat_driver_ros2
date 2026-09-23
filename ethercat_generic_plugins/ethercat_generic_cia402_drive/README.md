@@ -69,9 +69,10 @@ and `0x6085` are configured, and verify the behaviour under motion on a test rig
 
 - the wind-down owns the control word, whatever `auto_state_transitions` is set to, so neither the
   automatic state transitions nor a fault reset can take the drive back up to Operation Enabled,
-- every other command channel falls back to its configured default — zero velocity, zero torque and
+- the motion setpoints fall back to their configured defaults — zero velocity, zero torque and
   the last read position — so a setpoint left behind by a controller that has already stopped is
-  not replayed into a drive that is being brought down,
+  not replayed into a drive that is being brought down; the mode of operation and any other
+  non-motion channel are left as commanded, so the drive is not switched mode mid-stop,
 - a standing fault is deliberately not reset: clearing it on the way out would hide it from the
   next start-up.
 

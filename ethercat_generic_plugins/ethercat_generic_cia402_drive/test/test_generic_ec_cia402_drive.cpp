@@ -978,3 +978,21 @@ TEST_F(EcCiA402DriveTest, ResetWindDownDiscardsAnUnconsumedFaultResetRequest)
   // The next session's fault waits for a request of its own.
   EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, 0);
 }
+
+TEST_F(EcCiA402DriveTest, FaultLatchTakesTheNewCodeWhenItArrivesAfterTheEdge)
+{
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+
+  // The fault edge is seen while 0x603F still holds the previous fault's code.
+  plugin_->status_word_ = 0x0008;
+  plugin_->error_code_ = 0x2310;
+  plugin_->updateState();
+  ASSERT_EQ(plugin_->state_, STATE_FAULT);
+  ASSERT_EQ(plugin_->last_fault_error_code_, 0x2310);
+
+  // The drive publishes this fault's own code a cycle later, with the fault still standing.
+  plugin_->error_code_ = 0x8130;
+  plugin_->updateState();
+
+  EXPECT_EQ(plugin_->last_fault_error_code_, 0x8130);
+}

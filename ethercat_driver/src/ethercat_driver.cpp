@@ -123,6 +123,9 @@ public:
   explicit ScopedFifoPriority(int priority)
   : thread_(pthread_self()), elevated_priority_(priority)
   {
+    if (priority <= 0) {
+      return;
+    }
     if (const int error = pthread_getschedparam(thread_, &saved_policy_, &saved_param_)) {
       log_and_throw(
         "Failed to get scheduling policy and parameters for the activation thread: " +
@@ -137,6 +140,7 @@ public:
         " for the activation thread: " + std::string(std::strerror(error)));
     }
 
+    active_ = true;
     RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"),
       "Activation thread elevated to SCHED_FIFO priority %d.", priority);
   }
@@ -152,6 +156,9 @@ public:
   /// `on_activate()` calls std::terminate(), which is why the log line is always written first.
   ~ScopedFifoPriority() noexcept(false)
   {
+    if (!active_) {
+      return;
+    }
     if (const int error = pthread_setschedparam(thread_, saved_policy_, &saved_param_)) {
       log_and_throw(
         "Failed to restore the activation thread to scheduling policy " +
@@ -199,6 +206,7 @@ private:
   sched_param saved_param_{};
   int saved_policy_ = 0;
   const int elevated_priority_ = 0;
+  bool active_ = false;
 };
 
 /// RAII helper that temporarily pins the calling thread to a single CPU core for the duration of a
@@ -214,6 +222,9 @@ public:
   : thread_(pthread_self()), pinned_core_(cpu_core)
   {
     CPU_ZERO(&saved_affinity_);
+    if (cpu_core < 0) {
+      return;
+    }
     if (const int error = pthread_getaffinity_np(thread_, sizeof(saved_affinity_),
         &saved_affinity_))
     {
@@ -231,6 +242,7 @@ public:
         ": " + std::string(std::strerror(error)));
     }
 
+    active_ = true;
     RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"),
       "Activation thread pinned to CPU core %d.", cpu_core);
   }
@@ -240,6 +252,9 @@ public:
   /// trade-off that throwing from these destructors accepts.
   ~ScopedCpuAffinity() noexcept(false)
   {
+    if (!active_) {
+      return;
+    }
     if (const int error = pthread_setaffinity_np(thread_, sizeof(saved_affinity_),
         &saved_affinity_))
     {
@@ -281,6 +296,7 @@ private:
   const pthread_t thread_;
   cpu_set_t saved_affinity_{};
   const int pinned_core_ = -1;
+  bool active_ = false;
 };
 }  // namespace
 
@@ -1084,11 +1100,11 @@ CallbackReturn EthercatDriver::on_activate(
   // Distributed Clocks; sending them with low jitter lets DC slaves converge within the master's
   // DC sync-wait window instead of stalling for the full timeout. Scheduling is restored on exit.
   // Constructed priority-first so destruction restores the affinity before the scheduling policy.
-  const std::unique_ptr<ScopedFifoPriority> activation_priority =
-    activation_thread_priority_ >
-    0 ? std::make_unique<ScopedFifoPriority>(activation_thread_priority_) : nullptr;
-  const std::unique_ptr<ScopedCpuAffinity> activation_affinity =
-    activation_cpu_core_ >= 0 ? std::make_unique<ScopedCpuAffinity>(activation_cpu_core_) : nullptr;
+  // Held by value rather than through a unique_ptr: the guards' destructors throw by design, and
+  // unique_ptr's destructor is noexcept, so a throw from one would call std::terminate(). A guard
+  // given a disabled value (priority <= 0, core < 0) does nothing.
+  const ScopedFifoPriority activation_priority(activation_thread_priority_);
+  const ScopedCpuAffinity activation_affinity(activation_cpu_core_);
 
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
@@ -1249,12 +1265,9 @@ void EthercatDriver::windDownSlaves(bool elevate_scheduling)
   // stops the cyclic frames for longer than a DC slave's sync watchdog allows, which is exactly the
   // synchronization error this loop exists to avoid. Constructed priority-first so destruction
   // restores the affinity before the scheduling policy.
-  const std::unique_ptr<ScopedFifoPriority> wind_down_priority =
-    elevate_scheduling && activation_thread_priority_ > 0 ?
-    std::make_unique<ScopedFifoPriority>(activation_thread_priority_) : nullptr;
-  const std::unique_ptr<ScopedCpuAffinity> wind_down_affinity =
-    elevate_scheduling && activation_cpu_core_ >= 0 ?
-    std::make_unique<ScopedCpuAffinity>(activation_cpu_core_) : nullptr;
+  // Held by value so a throw from their destructors reaches the caller's try/catch; see on_activate().
+  const ScopedFifoPriority wind_down_priority(elevate_scheduling ? activation_thread_priority_ : 0);
+  const ScopedCpuAffinity wind_down_affinity(elevate_scheduling ? activation_cpu_core_ : -1);
 
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
