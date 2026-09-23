@@ -19,6 +19,7 @@
 #include <numeric>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <ctime>
 #include <filesystem>
 #include <sstream>
@@ -524,7 +525,6 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
     updateState();
     publish_last_error_code();
     if (wind_down_requested_ && !wind_down_complete_) {
-      ++wind_down_cycles_;
       update_wind_down_complete();
     }
     dump_cycle_csv_row();
@@ -764,7 +764,7 @@ uint16_t EcCiA402Drive::transition(DeviceState state, uint16_t control_word)
   return control_word;
 }
 
-void EcCiA402Drive::start_wind_down(double cycle_period_s, double timeout_s)
+void EcCiA402Drive::start_wind_down(double timeout_s)
 {
   // Taken before the first wind-down cycle forces them all true, because override_command lives
   // on the channel rather than on the wind-down: without this the drive would come back up with
@@ -779,7 +779,6 @@ void EcCiA402Drive::start_wind_down(double cycle_period_s, double timeout_s)
   }
 
   wind_down_requested_ = true;
-  wind_down_cycles_ = 0;
   wind_down_complete_ = false;
   wind_down_disable_voltage_sent_ = false;
 
@@ -788,9 +787,9 @@ void EcCiA402Drive::start_wind_down(double cycle_period_s, double timeout_s)
   // wind-down early; the ones configured to hold position in Quick Stop Active never would, so the
   // remaining half is left for Disable Voltage to be commanded and take effect. Unused when the
   // drive does not support Quick Stop, since that path never enters Quick Stop Active.
-  quick_stop_hold_cycles_ = (cycle_period_s > 0.0)
-    ? static_cast<uint32_t>(0.5 * timeout_s / cycle_period_s)
-    : 0;
+  quick_stop_hold_until_ = std::chrono::steady_clock::now() +
+    std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+    std::chrono::duration<double>(0.5 * timeout_s));
 
   RCLCPP_INFO(
     rclcpp::get_logger("EthercatDriver"),
@@ -834,8 +833,7 @@ void EcCiA402Drive::reset_wind_down()
   wind_down_requested_ = false;
   wind_down_complete_ = true;
   wind_down_disable_voltage_sent_ = false;
-  wind_down_cycles_ = 0;
-  quick_stop_hold_cycles_ = 0;
+  quick_stop_hold_until_ = {};
 
   RCLCPP_INFO(
     rclcpp::get_logger("EthercatDriver"),
@@ -853,7 +851,7 @@ uint16_t EcCiA402Drive::wind_down_transition(DeviceState state)
       return quick_stop_supported_ ? CONTROL_WORD_QUICK_STOP : CONTROL_WORD_DISABLE_OPERATION;
     case STATE_QUICK_STOP_ACTIVE:
       // Still decelerating under power, so this is not somewhere to leave the drive.
-      if (quick_stop_supported_ && wind_down_cycles_ < quick_stop_hold_cycles_) {
+      if (quick_stop_supported_ && std::chrono::steady_clock::now() < quick_stop_hold_until_) {
         return CONTROL_WORD_QUICK_STOP;
       }
       return CONTROL_WORD_DISABLE_VOLTAGE;

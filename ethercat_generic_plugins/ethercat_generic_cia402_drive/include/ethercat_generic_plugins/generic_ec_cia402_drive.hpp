@@ -55,7 +55,7 @@ public:
    *  decelerate on their quick stop ramp; every other drive is disabled, dropping the power stage
    *  so the axis is held by its brake. While the wind-down runs, every command channel but the
    *  control word falls back to its configured default. */
-  virtual void start_wind_down(double cycle_period_s, double timeout_s);
+  virtual void start_wind_down(double timeout_s);
 
   /** True once the drive has reached a de-energised state, or was never operational. */
   virtual bool wind_down_complete();
@@ -119,8 +119,9 @@ protected:
   /** Whether the control word written on this cycle's RPDO pass was Disable Voltage. */
   bool wind_down_disable_voltage_sent_ = false;
   bool quick_stop_supported_ = false;
-  uint32_t wind_down_cycles_ = 0;
-  uint32_t quick_stop_hold_cycles_ = 0;
+  /** Until when a drive in Quick Stop Active is left on its quick stop ramp before Disable Voltage.
+   *  A steady_clock deadline, so a scheduling stall cannot use up the ramp in a burst of cycles. */
+  std::chrono::steady_clock::time_point quick_stop_hold_until_{};
   /** Each channel's configured override_command, taken when the wind-down starts and put back
    *  when it is reset. The wind-down forces them all true, and that is channel state which
    *  outlives the wind-down itself. */

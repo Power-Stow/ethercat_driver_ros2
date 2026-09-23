@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <chrono>
 #include <map>
 #include <limits>
 #include <pluginlib/class_loader.hpp>
@@ -478,7 +479,7 @@ TEST_F(EcCiA402DriveTest, WindDownDisablesOperationFromOperationEnabled)
   plugin_->is_operational_ = true;
   plugin_->state_ = STATE_OPERATION_ENABLED;
 
-  plugin_->start_wind_down(0.01, 1.0);
+  plugin_->start_wind_down(1.0);
   EXPECT_FALSE(plugin_->wind_down_complete());
 
   uint8_t domain_address[4];
@@ -503,7 +504,7 @@ TEST_F(EcCiA402DriveTest, WindDownQuickStopsWhenTheDriveSupportsIt)
   plugin_->state_ = STATE_OPERATION_ENABLED;
   plugin_->quick_stop_supported_ = true;
 
-  plugin_->start_wind_down(0.01, 1.0);
+  plugin_->start_wind_down(1.0);
 
   uint8_t domain_address[4];
   EC_WRITE_U16(domain_address, 0x000F);
@@ -524,7 +525,7 @@ TEST_F(EcCiA402DriveTest, WindDownDisablesVoltageWhenTheQuickStopHoldElapses)
   plugin_->state_ = STATE_QUICK_STOP_ACTIVE;
   plugin_->quick_stop_supported_ = true;
 
-  plugin_->start_wind_down(0.01, 1.0);
+  plugin_->start_wind_down(1.0);
 
   uint8_t domain_address[4];
   EC_WRITE_U16(domain_address, 0x000B);
@@ -535,7 +536,7 @@ TEST_F(EcCiA402DriveTest, WindDownDisablesVoltageWhenTheQuickStopHoldElapses)
 
   // A drive whose quick stop option code holds position in Quick Stop Active never leaves it on
   // its own, so once the ramp budget is spent the voltage is disabled.
-  plugin_->wind_down_cycles_ = plugin_->quick_stop_hold_cycles_;
+  plugin_->quick_stop_hold_until_ = std::chrono::steady_clock::now();
   plugin_->processData(4, domain_address);
 
   EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
@@ -554,7 +555,7 @@ TEST_F(EcCiA402DriveTest, WindDownDisablesVoltageOnceTheDriveIsSwitchedOn)
   plugin_->is_operational_ = true;
   plugin_->state_ = STATE_SWITCH_ON;
 
-  plugin_->start_wind_down(0.01, 1.0);
+  plugin_->start_wind_down(1.0);
 
   uint8_t domain_address[4];
   EC_WRITE_U16(domain_address, 0x0007);
@@ -578,7 +579,7 @@ TEST_F(EcCiA402DriveTest, WindDownCompletesWhenTheDriveParksInReadyToSwitchOn)
   plugin_->is_operational_ = true;
   plugin_->state_ = STATE_READY_TO_SWITCH_ON;
 
-  plugin_->start_wind_down(0.01, 1.0);
+  plugin_->start_wind_down(1.0);
 
   uint8_t domain_address[4];
   EC_WRITE_U16(domain_address, 0x0000);
@@ -602,7 +603,7 @@ TEST_F(EcCiA402DriveTest, WindDownLeavesQuickStopActiveRatherThanHoldingIt)
   plugin_->is_operational_ = true;
   plugin_->state_ = STATE_QUICK_STOP_ACTIVE;
 
-  plugin_->start_wind_down(0.01, 1.0);
+  plugin_->start_wind_down(1.0);
 
   uint8_t domain_address[4];
   EC_WRITE_U16(domain_address, 0x000B);
@@ -624,7 +625,7 @@ TEST_F(EcCiA402DriveTest, WindDownCompletesOnceTheDriveIsDeEnergised)
   plugin_->is_operational_ = true;
   plugin_->state_ = STATE_SWITCH_ON_DISABLED;
 
-  plugin_->start_wind_down(0.01, 1.0);
+  plugin_->start_wind_down(1.0);
   EXPECT_FALSE(plugin_->wind_down_complete());
 
   uint8_t domain_address[4];
@@ -661,7 +662,7 @@ TEST_F(EcCiA402DriveTest, WindDownHoldsTheLastReadPositionInCsp)
   // Before the wind-down the drive follows the commanded position.
   ASSERT_EQ(EC_READ_S32(domain_address), 42);
 
-  plugin_->start_wind_down(0.01, 1.0);
+  plugin_->start_wind_down(1.0);
   plugin_->processData(0, domain_address);
 
   // During the wind-down a setpoint left behind by a stopped controller is not replayed.
@@ -674,7 +675,7 @@ TEST_F(EcCiA402DriveTest, WindDownCompletesImmediatelyWhenNotOperational)
   plugin_->is_operational_ = false;
 
   // Nothing is written to a drive that is not in OP, so the wind-down must not hold up the caller.
-  plugin_->start_wind_down(0.01, 1.0);
+  plugin_->start_wind_down(1.0);
 
   EXPECT_TRUE(plugin_->wind_down_complete());
 }
@@ -690,7 +691,7 @@ TEST_F(EcCiA402DriveTest, WindDownWaitsOutTheFaultReaction)
   plugin_->is_operational_ = true;
   plugin_->state_ = STATE_FAULT_REACTION_ACTIVE;
 
-  plugin_->start_wind_down(0.01, 1.0);
+  plugin_->start_wind_down(1.0);
 
   uint8_t domain_address[4];
   EC_WRITE_U16(domain_address, 0x000F);
@@ -723,7 +724,7 @@ TEST_F(EcCiA402DriveTest, WindDownJudgesCompletionOnTheStateReadThisCycle)
   plugin_->is_operational_ = true;
   plugin_->state_ = STATE_SWITCH_ON;
 
-  plugin_->start_wind_down(0.01, 1.0);
+  plugin_->start_wind_down(1.0);
 
   // The control word is chosen from last cycle's state, which had the drive function disabled.
   uint8_t domain_address[4];
@@ -750,7 +751,7 @@ TEST_F(EcCiA402DriveTest, WindDownDoesNotCompleteInAnUndefinedState)
   plugin_->is_operational_ = true;
   plugin_->state_ = STATE_UNDEFINED;
 
-  plugin_->start_wind_down(0.01, 1.0);
+  plugin_->start_wind_down(1.0);
 
   uint8_t domain_address[4];
   EC_WRITE_U16(domain_address, 0x000F);
@@ -787,7 +788,7 @@ TEST_F(EcCiA402DriveTest, ResetWindDownRestoresCommandChannelsForReactivation)
   plugin_->processData(2, torque_address);
   ASSERT_EQ(EC_READ_S16(torque_address), 42);
 
-  plugin_->start_wind_down(0.01, 1.0);
+  plugin_->start_wind_down(1.0);
   plugin_->processData(2, torque_address);
 
   // While the wind-down runs the commanded torque is replaced by the configured default.
@@ -823,7 +824,7 @@ TEST_F(EcCiA402DriveTest, ResetWindDownLeavesTheWindDownAbleToRunAgain)
   plugin_->state_ = STATE_OPERATION_ENABLED;
 
   uint8_t domain_address[4];
-  plugin_->start_wind_down(0.01, 1.0);
+  plugin_->start_wind_down(1.0);
   EC_WRITE_U16(domain_address, 0x000F);
   plugin_->processData(4, domain_address);
   ASSERT_EQ(EC_READ_U16(domain_address), 0x0007);
@@ -832,9 +833,9 @@ TEST_F(EcCiA402DriveTest, ResetWindDownLeavesTheWindDownAbleToRunAgain)
 
   // Idle again, so the next shutdown's loop is not told the wind-down is already finished.
   EXPECT_TRUE(plugin_->wind_down_complete());
-  EXPECT_EQ(plugin_->wind_down_cycles_, 0u);
+  EXPECT_EQ(plugin_->quick_stop_hold_until_, std::chrono::steady_clock::time_point{});
 
-  plugin_->start_wind_down(0.01, 1.0);
+  plugin_->start_wind_down(1.0);
   EXPECT_FALSE(plugin_->wind_down_complete());
 
   EC_WRITE_U16(domain_address, 0x000F);

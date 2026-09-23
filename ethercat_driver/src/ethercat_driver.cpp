@@ -1152,17 +1152,13 @@ void EthercatDriver::windDownSlaves()
     return;
   }
 
-  const double cycle_period_s = static_cast<double>(interval_ns) * 1e-9;
-  const uint64_t max_cycles =
-    static_cast<uint64_t>(shutdown_wind_down_timeout_s_ / cycle_period_s);
-
   RCLCPP_INFO(
     rclcpp::get_logger("EthercatDriver"),
     "Winding down %zu EtherCAT module(s), at most %.3f s ...",
     ec_modules_.size(), shutdown_wind_down_timeout_s_);
 
   for (auto & module : ec_modules_) {
-    module->start_wind_down(cycle_period_s, shutdown_wind_down_timeout_s_);
+    module->start_wind_down(shutdown_wind_down_timeout_s_);
   }
 
   // The bring-up loop's real-time treatment applies here for the same reason: a scheduling gap
@@ -1177,10 +1173,13 @@ void EthercatDriver::windDownSlaves()
 
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
+  // Bounded by elapsed time rather than a count of nominal cycles: after a scheduling stall or an
+  // update() that overruns its period, the absolute deadlines below are already in the past, and a
+  // cycle count would let the catch-up cycles hold deactivation well beyond the timeout.
+  const struct timespec wind_down_start = t;
 
   bool complete = false;
-  uint64_t cycle = 0;
-  while (!complete && cycle < max_cycles) {
+  while (!complete && monotonic_elapsed_s(wind_down_start) < shutdown_wind_down_timeout_s_) {
     // calculate next shot. carry over nanoseconds into seconds.
     t.tv_nsec += interval_ns;
     while (t.tv_nsec >= 1000000000) {
@@ -1195,14 +1194,13 @@ void EthercatDriver::windDownSlaves()
     for (auto & module : ec_modules_) {
       complete = complete && module->wind_down_complete();
     }
-    ++cycle;
   }
 
   if (complete) {
     RCLCPP_INFO(
       rclcpp::get_logger("EthercatDriver"),
       "Wind-down complete after %.3f s.",
-      static_cast<double>(cycle) * cycle_period_s);
+      monotonic_elapsed_s(wind_down_start));
   } else {
     RCLCPP_WARN(
       rclcpp::get_logger("EthercatDriver"),

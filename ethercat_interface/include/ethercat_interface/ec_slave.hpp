@@ -54,9 +54,9 @@ public:
   /** Begin the cyclic wind-down towards a safe, de-energised state.
    *  Called while the master is still exchanging process data, so that a slave which has to be
    *  commanded down (a CiA-402 drive, for instance) can be, before the cyclic frames stop.
-   *  @param cycle_period_s Period of the cyclic exchange that drives the wind-down.
-   *  @param timeout_s Budget the caller allows before it stops cycling regardless. */
-  virtual void start_wind_down(double /*cycle_period_s*/, double /*timeout_s*/) {}
+   *  @param timeout_s Budget the caller allows before it stops cycling regardless, measured in
+   *  monotonic time rather than in cycles. */
+  virtual void start_wind_down(double /*timeout_s*/) {}
   /** True once the slave is de-energised and the cyclic exchange may stop.
    *  Slaves with nothing to wind down report completion immediately. */
   virtual bool wind_down_complete() {return true;}

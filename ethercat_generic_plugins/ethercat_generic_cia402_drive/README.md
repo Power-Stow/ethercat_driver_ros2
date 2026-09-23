@@ -41,7 +41,8 @@ Operation Enabled within a few cycles and then park in Ready to Switch On while 
 so the caller would spend its whole `shutdown_wind_down_timeout_s` waiting for a transition the
 drive never makes, and warn about a slave that is already de-energised.
 
-Half of the driver's `shutdown_wind_down_timeout_s` budget is given to the quick stop ramp; the
+Half of the driver's `shutdown_wind_down_timeout_s` budget is given to the quick stop ramp,
+timed on the monotonic clock from the start of the wind-down; the
 remainder is left for Disable Voltage to be commanded and take effect. Drives whose quick stop
 option code (`0x605A`) takes them to Switch On Disabled leave Quick Stop Active on their own and
 finish early; the ones configured to hold position there are disabled once the budget is spent.
