@@ -47,7 +47,7 @@ Set on the `<hardware>` element of the `ros2_control` system.
 `require_startup_sdo` — refuse the activation when a startup config SDO download fails (default `false`, which brings the bus up anyway).
 `publish_diagnostics` — enable EtherCAT health diagnostics on `/diagnostics` (default `false`).
 `diagnostics_period_s` — diagnostics publish period in seconds (default `1.0`).
-`dc_time_diff_warn_ns` — per-slave DC system-time-difference magnitude above which a `WARN` is raised (default `10000`).
+`dc_time_diff_warn_ns` — per-slave DC system-time-difference magnitude above which a `WARN` is raised (default `10000`, valid range `[0, 2147483647]`; out-of-range values fall back to the default).
 `dt_tolerated_overrun` — fraction of the expected cycle period a cycle may exceed before it counts as an overrun, i.e. the threshold is `(1 + dt_tolerated_overrun) / control_frequency` (default `0.5`).
 
 ### Health diagnostics
@@ -57,6 +57,7 @@ When `publish_diagnostics` is `true`, the driver publishes `diagnostic_msgs/Diag
 `SCHED_FIFO` loop untouched apart from cheap state snapshotting. It integrates with
 `rqt_runtime_monitor` and `diagnostic_aggregator`.
 The node name and hardware ID are derived from the `ros2_control` hardware component name,
+with characters invalid in a node name replaced by `_` plus a stable hash suffix to keep sanitized names unique,
 so multiple driver instances in one controller manager publish distinguishable statuses,
 since `diagnostic_updater` prefixes each status name with the node name.
 

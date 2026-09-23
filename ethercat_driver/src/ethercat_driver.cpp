@@ -390,6 +390,32 @@ const char * al_status_code_to_string(uint16_t code)
     default: return "Unknown";
   }
 }
+
+/// Build a valid ROS node name from @p prefix and a hardware component name, preserving uniqueness.
+///
+/// Characters that are not valid in a node name are replaced by '_'.
+/// Since that replacement is not injective (e.g. "arm-a" and "arm_a"),
+/// a sanitized name additionally gets a stable FNV-1a hash of the original name as a suffix.
+/// Names that are already valid are used unchanged.
+std::string make_unique_node_name(const std::string & prefix, const std::string & component_name)
+{
+  std::string sanitized = component_name;
+  std::replace_if(
+    sanitized.begin(), sanitized.end(),
+    [](unsigned char c) {return !std::isalnum(c) && c != '_';}, '_');
+  if (sanitized == component_name) {
+    return prefix + sanitized;
+  }
+
+  uint32_t hash = 2166136261u;
+  for (const unsigned char c : component_name) {
+    hash ^= static_cast<uint32_t>(c);
+    hash *= 16777619u;
+  }
+  char suffix[16];
+  std::snprintf(suffix, sizeof(suffix), "_%08x", hash);
+  return prefix + sanitized + suffix;
+}
 }  // namespace
 
 namespace ethercat_driver
@@ -1701,7 +1727,17 @@ void EthercatDriver::parseDiagnosticsParameters()
   it = info_.hardware_parameters.find("dc_time_diff_warn_ns");
   if (it != info_.hardware_parameters.end()) {
     try {
-      dc_time_diff_warn_ns_ = static_cast<int32_t>(std::stol(it->second));
+      // Parse wide and range-check before narrowing, since a negative or wrapped threshold would
+      // flag every DC sample as drifting.
+      const long long dc_time_diff_warn_in = std::stoll(it->second);
+      if (dc_time_diff_warn_in >= 0 && dc_time_diff_warn_in <= std::numeric_limits<int32_t>::max()) {
+        dc_time_diff_warn_ns_ = static_cast<int32_t>(dc_time_diff_warn_in);
+      } else {
+        RCLCPP_WARN(
+          rclcpp::get_logger("EthercatDriver"),
+          "Invalid dc_time_diff_warn_ns (%lld, must be in [0, %d]); using %d ns.",
+          dc_time_diff_warn_in, std::numeric_limits<int32_t>::max(), dc_time_diff_warn_ns_);
+      }
     } catch (const std::exception & e) {
       RCLCPP_WARN(
         rclcpp::get_logger("EthercatDriver"),
@@ -1774,12 +1810,9 @@ void EthercatDriver::startDiagnostics()
 
   // Derive the node name and hardware ID from the hardware component name so multiple driver instances
   // in one controller manager publish distinguishable statuses (the updater prefixes each status name
-  // with the node name). Characters that are not valid in a ROS node name are replaced by '_'.
-  std::string node_name = "ethercat_diagnostics_" + info_.name;
-  std::replace_if(
-    node_name.begin(), node_name.end(),
-    [](unsigned char c) {return !std::isalnum(c) && c != '_';}, '_');
-  diagnostics_node_ = std::make_shared<rclcpp::Node>(node_name);
+  // with the node name).
+  diagnostics_node_ =
+    std::make_shared<rclcpp::Node>(make_unique_node_name("ethercat_diagnostics_", info_.name));
   diagnostics_updater_ =
     std::make_unique<diagnostic_updater::Updater>(diagnostics_node_, diagnostics_period_s_);
   diagnostics_updater_->setHardwareID(info_.name);
