@@ -1299,7 +1299,7 @@ hardware_interface::return_type EthercatDriver::perform_command_mode_switch(
   const std::vector<std::string> & stop_interfaces)
 {
   // Starting interfaces are left alone: a controller that has just claimed one writes it before the next
-  // cycle reaches the bus, and pre-empting that would overwrite its first command.
+  // cycle reaches the bus, and preempting that would overwrite its first command.
   for (const auto & interface_name : stop_interfaces) {
     release_joint_command(interface_name);
   }
