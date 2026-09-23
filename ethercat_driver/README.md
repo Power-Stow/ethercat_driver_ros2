@@ -86,7 +86,8 @@ The delay is shortened to `activation_timeout_s` when the budget is below one se
 and both exits above are checked during it as well as during the loop itself.
 Every wake-up is capped at the deadline it serves, so a control period longer than the remaining
 budget does not overshoot it.
-A shutdown request takes precedence over a bus that has come up in the meantime.
+A shutdown request, and then the timeout, take precedence over a bus that has come up in the
+meantime, so a late wake-up or a slow update cannot turn into a success past the budget.
 
 If you ever experience a slave who won't initialize (i.e. stuck in `INIT`) and whose identity reads `0x00000000:0x00000000` in `ethercat slaves`, it is because the device has not released its EEPROM to the master — its own CPU still owns register `0x0500` — so the master cannot match it against the configured vendor and product code and never configures it.
 `ethercat rescan` usually clears that.
@@ -136,7 +137,8 @@ mirror image of the bring-up loop in `on_activate()`. Each module is asked to wi
 (`EcSlave::start_wind_down()`) and the loop keeps the process data flowing until every module
 reports `EcSlave::wind_down_complete()`, or until `shutdown_wind_down_timeout_s` expires.
 The timeout is measured on the monotonic clock rather than counted in cycles,
-so a scheduling stall or an overrunning update cannot stretch deactivation past it. Modules
+so a scheduling stall or an overrunning update cannot stretch deactivation past it,
+and each wake-up is capped at it, so a control period longer than the remaining budget cannot either. Modules
 with nothing to wind down report completion immediately, so the loop costs a single cycle for a bus
 that carries none. `ethercat_generic_cia402_drive` uses it to disable and then de-energise
 the drive, or to Quick Stop it where its slave config declares `quick_stop_supported`.

@@ -1107,12 +1107,11 @@ CallbackReturn EthercatDriver::on_activate(
         rclcpp::get_logger("EthercatDriver"),
         "Shutdown requested while waiting for the EtherCAT bus to become operational.");
       running = false;
-    } else if (isAllInit) {
-      running = false;
-      operational = true;
     } else if (activation_timeout_s_ > 0.0 &&
       monotonic_elapsed_s(activation_start) >= activation_timeout_s_)
     {
+      // Checked before accepting an operational bus: capping the requested wake-up does not cap the
+      // actual one, and a late wake-up or a slow update() must not turn into a success past the budget.
       RCLCPP_ERROR(
         rclcpp::get_logger("EthercatDriver"),
         "EtherCAT bus did not become operational within %.1f s. Still waiting on: %s. Check "
@@ -1121,6 +1120,9 @@ CallbackReturn EthercatDriver::on_activate(
         activation_timeout_s_,
         pendingModuleDescription().c_str());
       running = false;
+    } else if (isAllInit) {
+      running = false;
+      operational = true;
     }
     // calculate next shot. carry over nanoseconds into microseconds.
     t.tv_nsec += interval_ns;
@@ -1223,6 +1225,10 @@ void EthercatDriver::windDownSlaves()
   // update() that overruns its period, the absolute deadlines below are already in the past, and a
   // cycle count would let the catch-up cycles hold deactivation well beyond the timeout.
   const struct timespec wind_down_start = t;
+  // Each wake-up is capped at this too, so a control period longer than the remaining budget does
+  // not hold deactivation for a full period past it.
+  const struct timespec wind_down_deadline =
+    monotonic_after(wind_down_start, shutdown_wind_down_timeout_s_);
 
   bool complete = false;
   while (!complete && monotonic_elapsed_s(wind_down_start) < shutdown_wind_down_timeout_s_) {
@@ -1232,6 +1238,7 @@ void EthercatDriver::windDownSlaves()
       t.tv_nsec -= 1000000000;
       t.tv_sec++;
     }
+    cap_wake_up(t, wind_down_deadline);
     clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
 
     master_->update();
