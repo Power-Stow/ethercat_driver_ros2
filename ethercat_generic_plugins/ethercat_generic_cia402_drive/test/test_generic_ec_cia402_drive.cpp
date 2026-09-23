@@ -414,7 +414,7 @@ TEST_F(EcCiA402DriveTest, JointOffsetStartupWrapEnabledAdjustsFirstSampleOnly)
   plugin_->setup_interface_mapping();
   plugin_->joint_offset_ = -3.0;
   plugin_->joint_offset_startup_wrap_enabled_ = true;
-  plugin_->is_operational_ = true;
+  plugin_->status_word_ = 0x1237;
 
   uint8_t domain_address[4];
   EC_WRITE_S32(domain_address, -4);
@@ -433,7 +433,7 @@ TEST_F(EcCiA402DriveTest, JointOffsetStartupWrapEnabledAdjustsFirstSampleOnly)
   EXPECT_NEAR(plugin_->state_interface_ptr_->at(0), 0.28318530717958623, 1e-9);
 }
 
-TEST_F(EcCiA402DriveTest, JointOffsetStartupWrapWaitsForOperationalState)
+TEST_F(EcCiA402DriveTest, JointOffsetStartupWrapWaitsForSlaveData)
 {
   std::unordered_map<std::string, std::string> slave_parameters;
   std::vector<double> state_interface = {123.0, 0.0};
@@ -456,7 +456,7 @@ TEST_F(EcCiA402DriveTest, JointOffsetStartupWrapWaitsForOperationalState)
   EXPECT_TRUE(std::isnan(plugin_->last_position_));
   EXPECT_NEAR(plugin_->state_interface_ptr_->at(0), 123.0, 1e-9);
 
-  plugin_->is_operational_ = true;
+  plugin_->status_word_ = 0x1237;
   EC_WRITE_S32(domain_address, -4);
   plugin_->processData(6, domain_address);
 
