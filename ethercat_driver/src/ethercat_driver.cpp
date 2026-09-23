@@ -512,6 +512,12 @@ uint16_t EthercatDriver::getAliasOrDefaultAlias(
   }
 }
 
+EthercatDriver::~EthercatDriver()
+{
+  // A still-joinable std::thread member would call std::terminate() on destruction.
+  stopDiagnostics();
+}
+
 CallbackReturn EthercatDriver::on_init(
   const hardware_interface::HardwareComponentInterfaceParams & params)
 {

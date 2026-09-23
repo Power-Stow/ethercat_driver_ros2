@@ -51,6 +51,11 @@ class EthercatDriver : public hardware_interface::SystemInterface
 public:
   RCLCPP_SHARED_PTR_DEFINITIONS(EthercatDriver)
 
+  /** Stops and joins the diagnostics publisher as a final safety net,
+   *  in case the component is destroyed without passing through a deactivating lifecycle transition. */
+  ETHERCAT_DRIVER_PUBLIC
+  ~EthercatDriver() override;
+
   ETHERCAT_DRIVER_PUBLIC
   CallbackReturn on_init(
     const hardware_interface::HardwareComponentInterfaceParams & params) override;
