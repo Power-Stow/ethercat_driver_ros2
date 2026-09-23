@@ -141,6 +141,8 @@ void EcMaster::addSlave(EcSlave * slave)
   // configure slave in master
   SlaveInfo slave_info;
   slave_info.slave = slave;
+  // Resolved here rather than per cycle, keeping the dynamic_cast out of the cyclic loop.
+  slave_info.cia402_provider = dynamic_cast<const Cia402DiagnosticsProvider *>(slave);
   slave_info.config = ecrt_master_slave_config(
     master_,
     slave->alias_, slave->position_,
@@ -813,13 +815,9 @@ void EcMaster::updateDiagnosticsSnapshot(uint32_t domain)
     sd.dc_system_time_diff_valid = slave.dc_system_time_diff_valid;
     sd.dc_propagation_delay__ns = slave.dc_propagation_delay_ns;
     sd.dc_propagation_delay_valid = slave.dc_propagation_delay_valid;
-    sd.has_cia402 = false;
-    if (slave.slave != nullptr) {
-      const auto cia402 = slave.slave->cia402Diagnostics();
-      if (cia402.has_value()) {
-        sd.has_cia402 = true;
-        sd.cia402 = cia402.value();
-      }
+    sd.has_cia402 = slave.cia402_provider != nullptr;
+    if (sd.has_cia402) {
+      sd.cia402 = slave.cia402_provider->cia402Diagnostics();
     }
   }
 

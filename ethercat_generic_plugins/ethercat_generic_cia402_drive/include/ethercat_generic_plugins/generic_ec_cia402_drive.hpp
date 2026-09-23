@@ -20,13 +20,13 @@
 #include <chrono>
 #include <fstream>
 #include <cstdint>
-#include <optional>
 #include <vector>
 #include <string>
 #include <unordered_map>
 #include <limits>
 
 #include "yaml-cpp/yaml.h"
+#include "ethercat_interface/ec_diagnostics.hpp"
 #include "ethercat_interface/ec_slave.hpp"
 #include "ethercat_interface/ec_pdo_single_interface_channel_manager.hpp"
 #include "ethercat_generic_plugins/generic_ec_slave.hpp"
@@ -35,7 +35,7 @@
 namespace ethercat_generic_plugins
 {
 
-class EcCiA402Drive : public GenericEcSlave
+class EcCiA402Drive : public GenericEcSlave, public ethercat_interface::Cia402DiagnosticsProvider
 {
 public:
   EcCiA402Drive();
@@ -46,7 +46,7 @@ public:
 
   virtual void processData(size_t entry_idx, uint8_t * domain_address);
 
-  std::optional<ethercat_interface::Cia402Diagnostics> cia402Diagnostics() override;
+  ethercat_interface::Cia402Diagnostics cia402Diagnostics() const override;
 
   virtual bool setupSlave(
     std::unordered_map<std::string, std::string> slave_parameters,

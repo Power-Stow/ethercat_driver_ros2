@@ -341,6 +341,8 @@ protected:
   struct SlaveInfo
   {
     EcSlave * slave = NULL;
+    /** @ref slave as an optional CiA 402 diagnostics provider, resolved once in addSlave() */
+    const Cia402DiagnosticsProvider * cia402_provider = NULL;
     ec_slave_config_t * config = NULL;
     ec_slave_config_state_t config_state = {0, 0, 0};
 

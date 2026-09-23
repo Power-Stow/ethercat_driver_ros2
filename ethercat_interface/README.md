@@ -63,7 +63,11 @@ The DC registers are only requested for slaves configured for distributed clocks
 created) and read with the thread-safe `getDiagnostics()`. `ethercat_driver` publishes this snapshot
 to `/diagnostics`; see that package's README.
 
-Slave plugins expose their device-specific health by overriding `EcSlave::cia402Diagnostics()`.
+Slave plugins expose their device-specific health by additionally inheriting from
+`Cia402DiagnosticsProvider` (`ec_diagnostics.hpp`) and implementing `cia402Diagnostics()`.
+The interface is deliberately separate from `EcSlave`, so the `EcSlave` vtable and thus the ABI of
+existing out-of-tree slave plugins is unchanged; the master discovers it with a `dynamic_cast` once
+per slave in `addSlave()`.
 
 ## Testing
 

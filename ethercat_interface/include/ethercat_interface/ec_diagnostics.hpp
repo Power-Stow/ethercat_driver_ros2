@@ -36,6 +36,22 @@ struct Cia402Diagnostics
   bool in_fault = false;             //< True while in a fault / fault-reaction state.
 };
 
+/// @brief Optional interface a slave plugin implements to expose its CiA 402 device state.
+///
+/// Kept separate from EcSlave, so that adding it leaves the EcSlave vtable, and hence the ABI of
+/// existing out-of-tree slave plugins, unchanged. The master discovers it once per slave with a
+/// dynamic_cast when the slave is added.
+class Cia402DiagnosticsProvider
+{
+public:
+  virtual ~Cia402DiagnosticsProvider();
+
+  /// @brief Current CiA 402 device-state summary.
+  ///
+  /// Called from the cyclic (real-time) loop, so implementations must not allocate or block.
+  virtual Cia402Diagnostics cia402Diagnostics() const = 0;
+};
+
 /// @brief Health snapshot for a single EtherCAT slave.
 struct SlaveDiagnostics
 {

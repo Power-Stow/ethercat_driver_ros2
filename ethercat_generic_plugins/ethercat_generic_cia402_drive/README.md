@@ -125,7 +125,7 @@ configured `joint_offset`.
 
 ## Health diagnostics
 
-The plugin implements `EcSlave::cia402Diagnostics()`, exposing the decoded CiA 402 device state
+The plugin implements `ethercat_interface::Cia402DiagnosticsProvider::cia402Diagnostics()`, exposing the decoded CiA 402 device state
 (state enum, a pointer to its static human-readable label, raw status word, and a fault flag).
 The snapshot is filled from the cyclic loop without heap allocation,
 and the label is turned into a string only by the diagnostics publisher thread.
