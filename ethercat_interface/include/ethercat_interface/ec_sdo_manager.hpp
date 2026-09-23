@@ -136,6 +136,13 @@ public:
     return type2bytes(data_type);
   }
 
+  /// True for a type buffer_read() decodes. For checking a type when the config is parsed, rather
+  /// than finding out from a read that fails only once the drive has been reached.
+  static bool is_supported_type(const std::string & data_type)
+  {
+    return type2bytes(data_type) != 0;
+  }
+
   /// Decode `size` bytes of `buffer` as `data_type`. Returns false for a type this does not handle.
   static bool buffer_read(
     const uint8_t * buffer, size_t size, const std::string & data_type,
@@ -182,7 +189,7 @@ public:
   int data;
 
 private:
-  size_t type2bytes(std::string type)
+  static size_t type2bytes(std::string type)
   {
     if (type == "int8" || type == "uint8") {
       return 1;

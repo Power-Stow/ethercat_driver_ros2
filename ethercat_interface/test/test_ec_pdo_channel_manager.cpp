@@ -123,6 +123,24 @@ TEST(TestEcPdoSingleInterfaceChannelManager, RejectZeroFactorFromSdoScale)
   ASSERT_FALSE(pdo_manager.factor_source.valid);
 }
 
+// An unsupported type is rejected when the config is parsed, even beside a literal factor. Left to
+// the decoder, the read would fail only after reaching the drive, and resolution would take that for
+// an unreadable drive and fall back on the literal without flagging the config.
+TEST(TestEcPdoSingleInterfaceChannelManager, RejectUnsupportedFactorFromSdoType)
+{
+  const char channel_config[] =
+    R"(
+      {index: 0x6078, sub_index: 0, type: int16, state_interface: current, factor: 0.01,
+       factor_from_sdo: {index: 0x6075, sub_index: 0, type: unit32, scale: 1.0e-6}}
+    )";
+  YAML::Node config = YAML::Load(channel_config);
+  ethercat_interface::EcPdoSingleInterfaceChannelManager pdo_manager;
+  pdo_manager.pdo_type = ethercat_interface::PdoType::TPDO;
+  ASSERT_FALSE(pdo_manager.load_from_config(config));
+  ASSERT_TRUE(pdo_manager.factor_source.configured);
+  ASSERT_FALSE(pdo_manager.factor_source.valid);
+}
+
 // The typed reader the master decodes an upload with.
 TEST(TestSdoConfigEntry, BufferReadDecodesTypes)
 {

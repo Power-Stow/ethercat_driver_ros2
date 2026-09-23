@@ -17,6 +17,7 @@
 #include <bitset>
 #include <iostream>
 #include "ethercat_interface/ec_pdo_single_interface_channel_manager.hpp"
+#include "ethercat_interface/ec_sdo_manager.hpp"
 
 namespace ethercat_interface
 {
@@ -134,6 +135,13 @@ bool CLASSM::load_from_config(YAML::Node channel_config)
     factor_source.index = source_config["index"].as<uint16_t>();
     factor_source.sub_index = source_config["sub_index"].as<uint8_t>();
     factor_source.data_type = source_config["type"].as<std::string>();
+    // Checked here rather than left to the decoder: a read that failed on the type would look like
+    // an unreachable drive, and a channel with a literal factor would quietly fall back on it.
+    if (!SdoConfigEntry::is_supported_type(factor_source.data_type)) {
+      std::cerr << "channel: " << index << " : factor_from_sdo type '" <<
+        factor_source.data_type << "' is not supported" << std::endl;
+      return false;
+    }
     if (source_config["scale"]) {
       factor_source.scale = source_config["scale"].as<double>();
     }
