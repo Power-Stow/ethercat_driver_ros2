@@ -669,15 +669,54 @@ TEST_F(EcCiA402DriveTest, WindDownHoldsTheLastReadPositionInCsp)
   EXPECT_EQ(EC_READ_S32(domain_address), 10);
 }
 
-TEST_F(EcCiA402DriveTest, WindDownCompletesImmediatelyWhenNotOperational)
+TEST_F(EcCiA402DriveTest, WindDownCompletesAfterOneCycleWhenNeverOperational)
 {
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
   plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
   plugin_->is_operational_ = false;
+  // A slave that never reached OP leaves its status word zeroed, which decodes to this.
+  plugin_->state_ = STATE_NOT_READY_TO_SWITCH_ON;
 
-  // Nothing is written to a drive that is not in OP, so the wind-down must not hold up the caller.
   plugin_->start_wind_down(1.0);
+  EXPECT_FALSE(plugin_->wind_down_complete());
 
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x0000);
+  plugin_->processData(4, domain_address);
+  plugin_->update_wind_down_complete();
+
+  // The drive is de-energised by the status word alone, so the wind-down does not hold up the caller.
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
   EXPECT_TRUE(plugin_->wind_down_complete());
+}
+
+TEST_F(EcCiA402DriveTest, WindDownCommandsADriveWhoseOperationalFlagIsStale)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  // The master polls slave states only every few cycles, so the drive can be in OP and Operation
+  // Enabled while the cached flag still says it is not.
+  plugin_->is_operational_ = false;
+  plugin_->state_ = STATE_OPERATION_ENABLED;
+
+  plugin_->start_wind_down(1.0);
+  EXPECT_FALSE(plugin_->wind_down_complete());
+
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x000F);
+  plugin_->processData(4, domain_address);
+  plugin_->update_wind_down_complete();
+
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0007) << "expected Disable Operation";
+  EXPECT_FALSE(plugin_->wind_down_complete());
 }
 
 TEST_F(EcCiA402DriveTest, WindDownWaitsOutTheFaultReaction)

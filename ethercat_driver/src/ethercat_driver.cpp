@@ -1032,15 +1032,26 @@ CallbackReturn EthercatDriver::on_activate(
   const std::unique_ptr<ScopedCpuAffinity> activation_affinity =
     activation_cpu_core_ >= 0 ? std::make_unique<ScopedCpuAffinity>(activation_cpu_core_) : nullptr;
 
-  // start after one second
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
-  // Timed from here rather than from the first cycle, so the initial one second delay counts
-  // against activation_timeout_s instead of being added to it.
+  // Timed from here rather than from the first cycle, so the initial delay counts against
+  // activation_timeout_s instead of being added to it.
   const struct timespec activation_start = t;
-  t.tv_sec++;
 
   const uint32_t interval_ns = master_->getInterval();
+
+  // Start after one second, or sooner when activation_timeout_s is shorter. Slept one period at a
+  // time rather than in one go, so a shutdown request is honoured during the delay as well.
+  const double initial_delay_s =
+    activation_timeout_s_ > 0.0 ? std::min(1.0, activation_timeout_s_) : 1.0;
+  while (rclcpp::ok() && monotonic_elapsed_s(activation_start) < initial_delay_s) {
+    t.tv_nsec += interval_ns;
+    while (t.tv_nsec >= 1000000000) {
+      t.tv_nsec -= 1000000000;
+      t.tv_sec++;
+    }
+    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
+  }
 
   bool running = true;
   bool operational = false;

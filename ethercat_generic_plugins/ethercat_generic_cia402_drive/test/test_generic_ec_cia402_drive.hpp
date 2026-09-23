@@ -50,7 +50,8 @@ class FriendEcCiA402Drive : public ethercat_generic_plugins::EcCiA402Drive
   FRIEND_TEST(EcCiA402DriveTest, WindDownLeavesQuickStopActiveRatherThanHoldingIt);
   FRIEND_TEST(EcCiA402DriveTest, WindDownCompletesOnceTheDriveIsDeEnergised);
   FRIEND_TEST(EcCiA402DriveTest, WindDownHoldsTheLastReadPositionInCsp);
-  FRIEND_TEST(EcCiA402DriveTest, WindDownCompletesImmediatelyWhenNotOperational);
+  FRIEND_TEST(EcCiA402DriveTest, WindDownCompletesAfterOneCycleWhenNeverOperational);
+  FRIEND_TEST(EcCiA402DriveTest, WindDownCommandsADriveWhoseOperationalFlagIsStale);
   FRIEND_TEST(EcCiA402DriveTest, WindDownWaitsOutTheFaultReaction);
   FRIEND_TEST(EcCiA402DriveTest, WindDownJudgesCompletionOnTheStateReadThisCycle);
   FRIEND_TEST(EcCiA402DriveTest, WindDownDoesNotCompleteInAnUndefinedState);

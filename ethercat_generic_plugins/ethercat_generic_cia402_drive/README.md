@@ -83,7 +83,11 @@ judged on its Fault Reaction Active rather than released while it still decelera
 Quick Stop Active, Fault Reaction Active and a status word that decodes to no CiA-402 state keep the
 frames going until a known disabled state is read, or the caller's timeout expires.
 
-A drive that never became operational reports the wind-down complete immediately.
+The cached EtherCAT operational flag plays no part in this, because the master refreshes it only
+every few cycles and a drive can reach Operation Enabled in between.
+The wind-down control word goes out whether or not the flag is set, and a slave outside OP ignores it.
+A drive that never became operational reads its zeroed status word as Not Ready to Switch On,
+so it completes after a single cycle.
 
 ### Reactivation
 

@@ -82,6 +82,8 @@ master:
 For reference, a healthy bring-up of a single DC drive takes about six seconds including the
 loop's initial one second delay, and that delay counts against the budget. A bus carrying more
 DC slaves needs a larger one.
+The delay is shortened to `activation_timeout_s` when the budget is below one second,
+and both exits above are checked during it as well as during the loop itself.
 
 If you ever experience a slave who won't initialize (i.e. stuck in `INIT`) and whose identity reads `0x00000000:0x00000000` in `ethercat slaves`, it is because the device has not released its EEPROM to the master — its own CPU still owns register `0x0500` — so the master cannot match it against the configured vendor and product code and never configures it.
 `ethercat rescan` usually clears that.
@@ -136,7 +138,7 @@ immediately.
 `on_activate()` runs it as well when it gives up on the bus, on `activation_timeout_s` or a
 shutdown request. Some drives may already be in Operation Enabled while another module is still
 pending, and releasing the master under them is the same failure. Modules that never became
-operational report the wind-down complete at once.
+operational report the wind-down complete after a single cycle.
 
 `on_activate()` calls `EcSlave::reset_wind_down()` on every module before it brings the bus up.
 The modules are created once, in `on_init()`, and outlive a deactivate/activate cycle, so a

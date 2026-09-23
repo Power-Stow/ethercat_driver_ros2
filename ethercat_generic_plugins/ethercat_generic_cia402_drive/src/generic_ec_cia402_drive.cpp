@@ -346,10 +346,12 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
   ethercat_interface::EcPdoSingleInterfaceChannelManager & channel(*channel_ptr);
   // Special case: ControlWord
   if (channel.index == CiA402D_RPDO_CONTROLWORD) {
-    if (is_operational_ && wind_down_requested_) {
+    if (wind_down_requested_) {
       // The wind-down owns the control word: a fault reset or an automatic transition back up to
       // Operation Enabled would undo the very thing it is trying to achieve, and a control word
       // left behind by a controller that has already stopped must not be replayed either.
+      // Not gated on is_operational_: the master refreshes it only every few cycles, so a drive
+      // that reached OP since the last poll would go uncommanded. A slave outside OP ignores it.
       const uint16_t wind_down_control_word = wind_down_transition(state_);
       wind_down_disable_voltage_sent_ = wind_down_control_word == CONTROL_WORD_DISABLE_VOLTAGE;
       channel.default_value = wind_down_control_word;
@@ -801,9 +803,10 @@ void EcCiA402Drive::start_wind_down(double timeout_s)
 
 bool EcCiA402Drive::wind_down_complete()
 {
-  // A drive that is not operational is either already de-energised or no longer reachable over
-  // process data: either way the wind-down has nothing left to do and must not hold up the caller.
-  return wind_down_complete_ || !is_operational_;
+  // Deliberately not short-cut on !is_operational_, which the master refreshes only every few
+  // cycles: a drive can reach OP and Operation Enabled in between. A drive that never got that far
+  // reads its zeroed status word as Not Ready to Switch On, and completes after a single cycle.
+  return wind_down_complete_;
 }
 
 void EcCiA402Drive::reset_wind_down()

@@ -57,7 +57,8 @@ public:
    *  control word falls back to its configured default. */
   virtual void start_wind_down(double timeout_s);
 
-  /** True once the drive has reached a de-energised state, or was never operational. */
+  /** True once Disable Voltage has gone out and the drive reads as de-energised.
+   *  Judged on the status word alone, never on the cached operational flag. */
   virtual bool wind_down_complete();
 
   /** Release the control word and the other command channels, so the drive can be taken back up
