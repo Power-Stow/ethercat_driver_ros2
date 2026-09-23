@@ -62,7 +62,9 @@ double monotonic_elapsed_s(const struct timespec & since)
 /// The CLOCK_MONOTONIC instant @p seconds after @p base.
 struct timespec monotonic_after(const struct timespec & base, double seconds)
 {
-  const int64_t offset_ns = static_cast<int64_t>(seconds * 1e9);
+  // Clamped so the conversion to nanoseconds cannot overflow: a budget beyond a billion seconds is
+  // indistinguishable from none.
+  const int64_t offset_ns = static_cast<int64_t>(std::clamp(seconds, 0.0, 1e9) * 1e9);
   struct timespec result = base;
   result.tv_sec += static_cast<time_t>(offset_ns / 1000000000);
   result.tv_nsec += static_cast<long>(offset_ns % 1000000000);  // NOLINT(runtime/int)
@@ -73,12 +75,17 @@ struct timespec monotonic_after(const struct timespec & base, double seconds)
   return result;
 }
 
+/// True when @p instant lies after @p deadline.
+bool monotonic_later(const struct timespec & instant, const struct timespec & deadline)
+{
+  return instant.tv_sec > deadline.tv_sec ||
+         (instant.tv_sec == deadline.tv_sec && instant.tv_nsec > deadline.tv_nsec);
+}
+
 /// Pulls @p wake_up back to @p deadline when it lies beyond it.
 void cap_wake_up(struct timespec & wake_up, const struct timespec & deadline)
 {
-  if (wake_up.tv_sec > deadline.tv_sec ||
-    (wake_up.tv_sec == deadline.tv_sec && wake_up.tv_nsec > deadline.tv_nsec))
-  {
+  if (monotonic_later(wake_up, deadline)) {
     wake_up = deadline;
   }
 }
@@ -887,6 +894,13 @@ CallbackReturn EthercatDriver::configNetwork()
         rclcpp::get_logger("EthercatDriver"), "Invalid activation_timeout_s (%s)!", e.what());
       return CallbackReturn::ERROR;
     }
+    // std::stod accepts "nan" and "inf", which slip past every <= 0 check and into the deadline
+    // arithmetic.
+    if (!std::isfinite(activation_timeout_s_)) {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"), "activation_timeout_s must be a finite number!");
+      return CallbackReturn::ERROR;
+    }
   }
 
   // Budget for the shutdown wind-down loop (see windDownSlaves()).
@@ -901,6 +915,12 @@ CallbackReturn EthercatDriver::configNetwork()
       RCLCPP_FATAL(
         rclcpp::get_logger("EthercatDriver"),
         "Invalid shutdown_wind_down_timeout_s (%s)!", e.what());
+      return CallbackReturn::ERROR;
+    }
+    if (!std::isfinite(shutdown_wind_down_timeout_s_)) {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"),
+        "shutdown_wind_down_timeout_s must be a finite number!");
       return CallbackReturn::ERROR;
     }
   }
@@ -1229,28 +1249,37 @@ void EthercatDriver::windDownSlaves(bool elevate_scheduling)
   // update() that overruns its period, the absolute deadlines below are already in the past, and a
   // cycle count would let the catch-up cycles hold deactivation well beyond the timeout.
   const struct timespec wind_down_start = t;
-  // Each wake-up is capped at this too, so a control period longer than the remaining budget does
-  // not hold deactivation for a full period past it.
+  // The first wind-down frame goes out straight away, and no update is started at or past the
+  // deadline: an update begun there would take deactivation over the budget by however long it
+  // runs. Stopping before the sleep rather than after it also keeps a control period longer than
+  // the remaining budget from holding deactivation for a full period past it.
   const struct timespec wind_down_deadline =
     monotonic_after(wind_down_start, shutdown_wind_down_timeout_s_);
 
   bool complete = false;
-  while (!complete && monotonic_elapsed_s(wind_down_start) < shutdown_wind_down_timeout_s_) {
-    // calculate next shot. carry over nanoseconds into seconds.
-    t.tv_nsec += interval_ns;
-    while (t.tv_nsec >= 1000000000) {
-      t.tv_nsec -= 1000000000;
-      t.tv_sec++;
-    }
-    cap_wake_up(t, wind_down_deadline);
-    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
-
+  while (true) {
     master_->update();
 
     complete = true;
     for (auto & module : ec_modules_) {
       complete = complete && module->wind_down_complete();
     }
+    if (complete) {
+      break;
+    }
+
+    // calculate next shot. carry over nanoseconds into seconds.
+    t.tv_nsec += interval_ns;
+    while (t.tv_nsec >= 1000000000) {
+      t.tv_nsec -= 1000000000;
+      t.tv_sec++;
+    }
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (!monotonic_later(wind_down_deadline, t) || !monotonic_later(wind_down_deadline, now)) {
+      break;
+    }
+    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
   }
 
   if (complete) {

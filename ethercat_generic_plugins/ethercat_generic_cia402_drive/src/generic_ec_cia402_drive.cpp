@@ -135,9 +135,14 @@ void EcCiA402Drive::updateState()
   }
 
   latch_fault_error_code();
-  if (state_ == STATE_OPERATION_ENABLED) {
-    // From here on a fault is this session's, so it latches and waits for a deliberate reset.
-    operation_enabled_reached_ = true;
+  // The startup window closes the first time the drive is seen in a non-fault state past Not Ready
+  // to Switch On. Until the slave is in OP its status word reads zero, which decodes to Not Ready, so
+  // a fault the drive comes up in is still inside the window; one raised after it has reached Switch
+  // On Disabled or beyond is this session's, and latches until a deliberate reset.
+  if (state_ != STATE_START && state_ != STATE_NOT_READY_TO_SWITCH_ON && state_ != STATE_UNDEFINED &&
+    state_ != STATE_FAULT && state_ != STATE_FAULT_REACTION_ACTIVE)
+  {
+    startup_fault_window_closed_ = true;
   }
 
   last_status_word_ = status_word_;
@@ -643,7 +648,7 @@ bool EcCiA402Drive::setupSlave(
   // Armed here for the first activation. setupSlave() only runs in on_init, so the re-arming for
   // every later activation happens in reset_wind_down(), which the driver calls at the start of
   // each one.
-  operation_enabled_reached_ = false;
+  startup_fault_window_closed_ = false;
   startup_fault_reset_logged_ = false;
   publish_last_error_code();
 
@@ -741,10 +746,11 @@ uint16_t EcCiA402Drive::transition(DeviceState state, uint16_t control_word)
     case STATE_FAULT:                     // -> STATE_SWITCH_ON_DISABLED
       {
         // A drive that comes up in Fault is cleared once regardless, because the fault belongs to a
-        // session that has ended and nothing else can clear it before Operation Enabled is first
-        // reached: with auto_fault_reset off the reset comes from a command interface, and no
-        // controller is claiming one yet.
-        const bool startup_reset = reset_fault_on_startup_ && !operation_enabled_reached_;
+        // session that has ended and nothing else can clear it during bring-up: with
+        // auto_fault_reset off the reset comes from a command interface, and no controller is
+        // claiming one yet. A fault raised once the drive has left Not Ready to Switch On is this
+        // session's and is not cleared here (see updateState()).
+        const bool startup_reset = reset_fault_on_startup_ && !startup_fault_window_closed_;
         if (startup_reset && !startup_fault_reset_logged_) {
           RCLCPP_WARN(
             rclcpp::get_logger("EthercatDriver"),
@@ -788,10 +794,12 @@ void EcCiA402Drive::start_wind_down(double timeout_s)
   // quick stop option code takes them to Switch On Disabled finish well inside that and end the
   // wind-down early; the ones configured to hold position in Quick Stop Active never would, so the
   // remaining half is left for Disable Voltage to be commanded and take effect. Unused when the
-  // drive does not support Quick Stop, since that path never enters Quick Stop Active.
+  // drive does not support Quick Stop, since that path never enters Quick Stop Active. A budget that
+  // is not a positive finite number gives no hold at all, rather than an undefined conversion.
+  const double hold_s = std::isfinite(timeout_s) && timeout_s > 0.0 ? 0.5 * timeout_s : 0.0;
   quick_stop_hold_until_ = std::chrono::steady_clock::now() +
     std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-    std::chrono::duration<double>(0.5 * timeout_s));
+    std::chrono::duration<double>(hold_s));
 
   RCLCPP_INFO(
     rclcpp::get_logger("EthercatDriver"),
@@ -815,8 +823,13 @@ void EcCiA402Drive::reset_wind_down()
   // This is the one per-activation hook a module gets: setupSlave() runs once, in on_init. A drive
   // coming back up after a hardware component cycle is a fresh start as far as a fault it came up
   // in is concerned, so the one-shot startup reset has to be available to it again.
-  operation_enabled_reached_ = false;
+  startup_fault_window_closed_ = false;
   startup_fault_reset_logged_ = false;
+  // A fault reset requested through the command interface is only consumed in Fault. One requested
+  // in the last session and never consumed must not clear an unrelated fault in this one, least of
+  // all with auto_fault_reset and reset_fault_on_startup both off.
+  fault_reset_ = false;
+  last_fault_reset_command_ = false;
 
   // The state is forgotten too, so the first status word of the activation is decoded afresh rather
   // than compared against the one the last session ended on. A drive that was deactivated in Fault

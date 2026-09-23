@@ -905,7 +905,7 @@ TEST_F(EcCiA402DriveTest, StartupFaultResetIsReArmedOnEveryActivation)
   // Reached Operation Enabled: from here a fault is this session's, and latches.
   plugin_->status_word_ = 0x1237;
   plugin_->updateState();
-  ASSERT_TRUE(plugin_->operation_enabled_reached_);
+  ASSERT_TRUE(plugin_->startup_fault_window_closed_);
   EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, 0);
 
   // The next activation, with no wind-down having run, is a fresh start again.
@@ -936,4 +936,45 @@ TEST_F(EcCiA402DriveTest, FaultStandingAcrossReactivationIsLatchedAfresh)
   EXPECT_EQ(plugin_->state_, STATE_FAULT);
   EXPECT_EQ(plugin_->last_fault_error_code_, 0x8130);
   EXPECT_EQ(plugin_->last_fault_status_word_, 0x0008);
+}
+
+TEST_F(EcCiA402DriveTest, StartupFaultResetLeavesAFaultRaisedDuringBringUp)
+{
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  ASSERT_FALSE(plugin_->auto_fault_reset_);
+  ASSERT_TRUE(plugin_->reset_fault_on_startup_);
+
+  constexpr uint16_t enable_operation = 0x000F;
+  constexpr uint16_t fault_reset_bit = 0x0080;
+
+  // Before OP the status word reads zero: Not Ready to Switch On keeps the startup window open.
+  plugin_->status_word_ = 0x0000;
+  plugin_->updateState();
+  ASSERT_FALSE(plugin_->startup_fault_window_closed_);
+
+  // The drive comes up cleanly to Switch On Disabled, then faults on its way up to Operation
+  // Enabled. That fault is this session's, so without auto_fault_reset it is not cleared.
+  plugin_->status_word_ = 0x0040;
+  plugin_->updateState();
+  ASSERT_TRUE(plugin_->startup_fault_window_closed_);
+  EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, 0);
+}
+
+TEST_F(EcCiA402DriveTest, ResetWindDownDiscardsAnUnconsumedFaultResetRequest)
+{
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->auto_fault_reset_ = false;
+  plugin_->reset_fault_on_startup_ = false;
+
+  constexpr uint16_t enable_operation = 0x000F;
+  constexpr uint16_t fault_reset_bit = 0x0080;
+
+  // The last session requested a fault reset while the drive was not in Fault, so nothing used it.
+  plugin_->fault_reset_ = true;
+  plugin_->last_fault_reset_command_ = true;
+
+  plugin_->reset_wind_down();
+
+  // The next session's fault waits for a request of its own.
+  EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, 0);
 }

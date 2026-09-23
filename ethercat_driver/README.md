@@ -137,8 +137,9 @@ mirror image of the bring-up loop in `on_activate()`. Each module is asked to wi
 (`EcSlave::start_wind_down()`) and the loop keeps the process data flowing until every module
 reports `EcSlave::wind_down_complete()`, or until `shutdown_wind_down_timeout_s` expires.
 The timeout is measured on the monotonic clock rather than counted in cycles,
-so a scheduling stall or an overrunning update cannot stretch deactivation past it,
-and each wake-up is capped at it, so a control period longer than the remaining budget cannot either. Modules
+so a scheduling stall or an overrunning update cannot stretch deactivation past it.
+The first wind-down frame goes out straight away, and no update is started once the next one would
+begin at or past the deadline, so a control period longer than the remaining budget cannot either. Modules
 with nothing to wind down report completion immediately, so the loop costs a single cycle for a bus
 that carries none. `ethercat_generic_cia402_drive` uses it to disable and then de-energise
 the drive, or to Quick Stop it where its slave config declares `quick_stop_supported`.
