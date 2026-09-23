@@ -118,8 +118,12 @@ protected:
    * has elapsed, whichever comes first.
    * Also runs when `on_activate()` gives up on a bus that is only partly operational,
    * so a drive that already reached Operation Enabled is not left energised.
+   *
+   * @param elevate_scheduling Apply `activation_thread_priority` and `activation_cpu_core` for the
+   * duration of the loop. False when the caller already holds them, as the failed bring-up does:
+   * the scheduling guards are not nestable.
    */
-  void windDownSlaves();
+  void windDownSlaves(bool elevate_scheduling = true);
 
   /** @brief Name the modules that have not reached their operational state yet.
    *

@@ -1138,9 +1138,12 @@ CallbackReturn EthercatDriver::on_activate(
   if (!operational) {
     // On a bus that is only part of the way up, the drives that already reached Operation Enabled
     // would otherwise lose their cyclic data while energised. The ones still pending report the
-    // wind-down complete at once, so this costs nothing when no drive got that far.
+    // wind-down complete at once, so this costs nothing when no drive got that far. The thread is
+    // still under the activation's real-time guards, so the wind-down reuses them rather than
+    // nesting its own: a nested guard saves the already-elevated state, and its restore checks throw
+    // from destructors while the other guard's throw is unwinding, which calls std::terminate().
     try {
-      windDownSlaves();
+      windDownSlaves(false);
     } catch (const std::exception & e) {
       RCLCPP_WARN(
         rclcpp::get_logger("EthercatDriver"),
@@ -1187,7 +1190,7 @@ std::string EthercatDriver::pendingModuleDescription() const
   return pending.empty() ? "none" : pending;
 }
 
-void EthercatDriver::windDownSlaves()
+void EthercatDriver::windDownSlaves(bool elevate_scheduling)
 {
   // Deliberately not gated on activated_: a failed bring-up winds down whatever reached OP too.
   // The master is released on every exit from ACTIVE, so a released bus still returns here.
@@ -1214,10 +1217,11 @@ void EthercatDriver::windDownSlaves()
   // synchronization error this loop exists to avoid. Constructed priority-first so destruction
   // restores the affinity before the scheduling policy.
   const std::unique_ptr<ScopedFifoPriority> wind_down_priority =
-    activation_thread_priority_ > 0 ?
+    elevate_scheduling && activation_thread_priority_ > 0 ?
     std::make_unique<ScopedFifoPriority>(activation_thread_priority_) : nullptr;
   const std::unique_ptr<ScopedCpuAffinity> wind_down_affinity =
-    activation_cpu_core_ >= 0 ? std::make_unique<ScopedCpuAffinity>(activation_cpu_core_) : nullptr;
+    elevate_scheduling && activation_cpu_core_ >= 0 ?
+    std::make_unique<ScopedCpuAffinity>(activation_cpu_core_) : nullptr;
 
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);

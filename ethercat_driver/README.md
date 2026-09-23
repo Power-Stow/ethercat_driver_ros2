@@ -146,6 +146,8 @@ the drive, or to Quick Stop it where its slave config declares `quick_stop_suppo
 `activation_thread_priority` and `activation_cpu_core` apply to this loop too, for the same reason
 they apply to bring-up: a scheduling gap here stops the frames for longer than a DC slave's sync
 watchdog allows, which is the failure the wind-down exists to avoid.
+When `on_activate()` winds down a failed bring-up, the thread is still under the bring-up's own
+scheduling, so the wind-down keeps that rather than applying it a second time.
 
 `on_shutdown()` runs the same wind-down, which only does anything when the component is finalized
 straight from ACTIVE; after `on_deactivate()` the master is already released and it returns
