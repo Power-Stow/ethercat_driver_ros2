@@ -1758,15 +1758,22 @@ void EthercatDriver::startDiagnostics()
   diagnostics_thread_running_ = true;
   diagnostics_thread_ = std::thread(
     [this]() {
-      const auto tick = std::chrono::milliseconds(100);
-      double elapsed_s = diagnostics_period_s_;  // publish on the first iteration
+      // Sleep in bounded slices so stopDiagnostics() is not blocked by a long period.
+      const auto max_sleep = std::chrono::milliseconds(100);
+      const auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(diagnostics_period_s_));
+      auto next_publish = std::chrono::steady_clock::now();  // publish on the first iteration
       while (rclcpp::ok() && diagnostics_thread_running_) {
-        if (elapsed_s >= diagnostics_period_s_) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_publish) {
           diagnostics_updater_->force_update();
-          elapsed_s = 0.0;
+          next_publish += period;
+          if (next_publish <= now) {
+            // Publishing fell behind; resynchronize rather than publish in a burst.
+            next_publish = now + period;
+          }
         }
-        std::this_thread::sleep_for(tick);
-        elapsed_s += 0.1;
+        std::this_thread::sleep_until(std::min(next_publish, now + max_sleep));
       }
     });
 
@@ -1874,22 +1881,38 @@ void EthercatDriver::produceTimingDiagnostics(
   diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
   using diagnostic_msgs::msg::DiagnosticStatus;
-  const std::lock_guard<std::mutex> lock(timing_mutex_);
-  if (!timing_valid_) {
+  // Copy the scalars and release the lock before formatting, since stat.add() and stat.summary()
+  // may allocate and the real-time read() path contends for the same mutex.
+  bool valid = false;
+  double period_min_s = 0.0;
+  double period_max_s = 0.0;
+  double period_mean_s = 0.0;
+  uint64_t sample_count = 0;
+  uint64_t overrun_count = 0;
+  {
+    const std::lock_guard<std::mutex> lock(timing_mutex_);
+    valid = timing_valid_;
+    period_min_s = timing_period_min_s_;
+    period_max_s = timing_period_max_s_;
+    period_mean_s = timing_period_mean_s_;
+    sample_count = timing_sample_count_;
+    overrun_count = timing_overrun_count_;
+  }
+  if (!valid) {
     stat.summary(DiagnosticStatus::OK, "No timing samples yet");
     return;
   }
   const double expected_period_s =
     (control_frequency_ > 0.0) ? (1.0 / control_frequency_) : 0.0;
   stat.add("expected_period_ms", expected_period_s * 1e3);
-  stat.add("period_mean_ms", timing_period_mean_s_ * 1e3);
-  stat.add("period_min_ms", timing_period_min_s_ * 1e3);
-  stat.add("period_max_ms", timing_period_max_s_ * 1e3);
-  stat.add("jitter_max_ms", (timing_period_max_s_ - expected_period_s) * 1e3);
-  stat.add("overrun_count", timing_overrun_count_);
-  stat.add("sample_count", timing_sample_count_);
+  stat.add("period_mean_ms", period_mean_s * 1e3);
+  stat.add("period_min_ms", period_min_s * 1e3);
+  stat.add("period_max_ms", period_max_s * 1e3);
+  stat.add("jitter_max_ms", (period_max_s - expected_period_s) * 1e3);
+  stat.add("overrun_count", overrun_count);
+  stat.add("sample_count", sample_count);
 
-  if (timing_overrun_count_ > 0) {
+  if (overrun_count > 0) {
     stat.summary(DiagnosticStatus::WARN, "Cyclic loop deadline overruns detected");
   } else {
     stat.summary(DiagnosticStatus::OK, "Cyclic loop timing nominal");
