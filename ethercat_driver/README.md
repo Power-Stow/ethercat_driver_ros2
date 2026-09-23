@@ -84,6 +84,9 @@ loop's initial one second delay, and that delay counts against the budget. A bus
 DC slaves needs a larger one.
 The delay is shortened to `activation_timeout_s` when the budget is below one second,
 and both exits above are checked during it as well as during the loop itself.
+Every wake-up is capped at the deadline it serves, so a control period longer than the remaining
+budget does not overshoot it.
+A shutdown request takes precedence over a bus that has come up in the meantime.
 
 If you ever experience a slave who won't initialize (i.e. stuck in `INIT`) and whose identity reads `0x00000000:0x00000000` in `ethercat slaves`, it is because the device has not released its EEPROM to the master — its own CPU still owns register `0x0500` — so the master cannot match it against the configured vendor and product code and never configures it.
 `ethercat rescan` usually clears that.
@@ -107,6 +110,17 @@ What happens next is governed by `require_startup_sdo`:
 Enable it where the startup SDOs carry values the machine depends on — a speed limit, torque
 limits, control gains. A drive that did not receive them runs on whatever it already holds, which
 may be the defaults of whoever configured it last, and nothing downstream can tell the difference.
+
+### Released command interfaces
+
+When a controller stops, `perform_command_mode_switch()` releases each command interface it held
+to a value that commands no motion.
+Velocity and effort are set to zero.
+Position is held at the joint's last read position, rather than set to NaN,
+because a NaN makes a channel write its configured default,
+and only the CiA-402 plugin keeps that default at the last read position.
+A joint with no position reading keeps its last command.
+The control word, the mode of operation and the fault reset are left as they are.
 
 ### Shutdown wind-down
 
@@ -134,6 +148,8 @@ watchdog allows, which is the failure the wind-down exists to avoid.
 `on_shutdown()` runs the same wind-down, which only does anything when the component is finalized
 straight from ACTIVE; after `on_deactivate()` the master is already released and it returns
 immediately.
+`on_error()` runs it too, because ERROR can be entered straight from ACTIVE after an exception in
+a cyclic read or write, with drives still in Operation Enabled.
 
 `on_activate()` runs it as well when it gives up on the bus, on `activation_timeout_s` or a
 shutdown request. Some drives may already be in Operation Enabled while another module is still

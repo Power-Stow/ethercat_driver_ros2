@@ -20,6 +20,7 @@
 #include <sched.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <ctime>
@@ -56,6 +57,30 @@ double monotonic_elapsed_s(const struct timespec & since)
   clock_gettime(CLOCK_MONOTONIC, &now);
   return static_cast<double>(now.tv_sec - since.tv_sec) +
          static_cast<double>(now.tv_nsec - since.tv_nsec) * 1e-9;
+}
+
+/// The CLOCK_MONOTONIC instant @p seconds after @p base.
+struct timespec monotonic_after(const struct timespec & base, double seconds)
+{
+  const int64_t offset_ns = static_cast<int64_t>(seconds * 1e9);
+  struct timespec result = base;
+  result.tv_sec += static_cast<time_t>(offset_ns / 1000000000);
+  result.tv_nsec += static_cast<long>(offset_ns % 1000000000);  // NOLINT(runtime/int)
+  if (result.tv_nsec >= 1000000000) {
+    result.tv_nsec -= 1000000000;
+    result.tv_sec++;
+  }
+  return result;
+}
+
+/// Pulls @p wake_up back to @p deadline when it lies beyond it.
+void cap_wake_up(struct timespec & wake_up, const struct timespec & deadline)
+{
+  if (wake_up.tv_sec > deadline.tv_sec ||
+    (wake_up.tv_sec == deadline.tv_sec && wake_up.tv_nsec > deadline.tv_nsec))
+  {
+    wake_up = deadline;
+  }
 }
 
 /// Logs @p message as a warning and then throws it as a std::runtime_error.
@@ -1041,15 +1066,21 @@ CallbackReturn EthercatDriver::on_activate(
   const uint32_t interval_ns = master_->getInterval();
 
   // Start after one second, or sooner when activation_timeout_s is shorter. Slept one period at a
-  // time rather than in one go, so a shutdown request is honoured during the delay as well.
+  // time rather than in one go, so a shutdown request is honoured during the delay as well. Every
+  // wake-up is capped at the deadline it serves, so a control period longer than the remaining
+  // budget cannot overshoot it: the last step of the delay, and of the loop below, is cut short.
   const double initial_delay_s =
     activation_timeout_s_ > 0.0 ? std::min(1.0, activation_timeout_s_) : 1.0;
+  const struct timespec initial_delay_end = monotonic_after(activation_start, initial_delay_s);
+  const struct timespec activation_deadline =
+    monotonic_after(activation_start, activation_timeout_s_ > 0.0 ? activation_timeout_s_ : 0.0);
   while (rclcpp::ok() && monotonic_elapsed_s(activation_start) < initial_delay_s) {
     t.tv_nsec += interval_ns;
     while (t.tv_nsec >= 1000000000) {
       t.tv_nsec -= 1000000000;
       t.tv_sec++;
     }
+    cap_wake_up(t, initial_delay_end);
     clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
   }
 
@@ -1067,17 +1098,18 @@ CallbackReturn EthercatDriver::on_activate(
     for (auto & module : ec_modules_) {
       isAllInit = isAllInit && module->initialized();
     }
-    if (isAllInit) {
-      running = false;
-      operational = true;
-    } else if (!rclcpp::ok()) {
+    if (!rclcpp::ok()) {
       // This loop runs on the thread that delivered the robot description, so while it spins the
       // node answers no service and honours no signal: a bus that never reaches OP used to leave
-      // ros2_control_node to be SIGKILLed. Give up as soon as shutdown is requested.
+      // ros2_control_node to be SIGKILLed. Give up as soon as shutdown is requested, and ahead of
+      // a bus that has come up meanwhile: activating into a shutdown helps nobody.
       RCLCPP_WARN(
         rclcpp::get_logger("EthercatDriver"),
         "Shutdown requested while waiting for the EtherCAT bus to become operational.");
       running = false;
+    } else if (isAllInit) {
+      running = false;
+      operational = true;
     } else if (activation_timeout_s_ > 0.0 &&
       monotonic_elapsed_s(activation_start) >= activation_timeout_s_)
     {
@@ -1095,6 +1127,9 @@ CallbackReturn EthercatDriver::on_activate(
     while (t.tv_nsec >= 1000000000) {
       t.tv_nsec -= 1000000000;
       t.tv_sec++;
+    }
+    if (activation_timeout_s_ > 0.0) {
+      cap_wake_up(t, activation_deadline);
     }
   }
 
@@ -1260,6 +1295,17 @@ hardware_interface::return_type EthercatDriver::perform_command_mode_switch(
   return hardware_interface::return_type::OK;
 }
 
+double EthercatDriver::joint_position_state(size_t joint_index) const
+{
+  const auto & state_interfaces = info_.joints[joint_index].state_interfaces;
+  for (auto k = 0ul; k < state_interfaces.size(); k++) {
+    if (state_interfaces[k].name == hardware_interface::HW_IF_POSITION) {
+      return hw_joint_states_[joint_index][k];
+    }
+  }
+  return std::numeric_limits<double>::quiet_NaN();
+}
+
 void EthercatDriver::release_joint_command(const std::string & interface_name)
 {
   for (auto j = 0ul; j < info_.joints.size(); j++) {
@@ -1270,9 +1316,20 @@ void EthercatDriver::release_joint_command(const std::string & interface_name)
       }
 
       if (name == hardware_interface::HW_IF_POSITION) {
-        // The channel managers write their configured default in place of a NaN, and a CiA-402 position
-        // channel's default is the last read position, so this is "stay where you are".
-        hw_joint_commands_[j][i] = std::numeric_limits<double>::quiet_NaN();
+        // Held at the joint's last read position. A NaN is not "stay where you are" for every module:
+        // the channel managers write their configured default in place of it, which only the CiA-402
+        // plugin keeps at the last read position, so a generic channel defaulting to zero would be
+        // commanded to zero. Without a position reading to hold, the last command is left in place.
+        const double held_position = joint_position_state(j);
+        if (std::isnan(held_position)) {
+          RCLCPP_WARN(
+            rclcpp::get_logger("EthercatDriver"),
+            "Command interface '%s' was released without a position reading to hold; its last "
+            "command is left in place.",
+            interface_name.c_str());
+          return;
+        }
+        hw_joint_commands_[j][i] = held_position;
       } else if (name == hardware_interface::HW_IF_VELOCITY || // NOLINT
         name == hardware_interface::HW_IF_EFFORT)
       {
@@ -1343,6 +1400,17 @@ CallbackReturn EthercatDriver::on_error(
   const std::lock_guard lock(ec_mutex_);
 
   RCLCPP_ERROR(rclcpp::get_logger("EthercatDriver"), "Error cleanup ...please wait...");
+
+  // ERROR can be entered straight from ACTIVE, after an exception in a cyclic read or write, with
+  // drives still in Operation Enabled. Released without a wind-down they would lose their cyclic
+  // data energised. When the master is already gone this returns immediately.
+  try {
+    windDownSlaves();
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(
+      rclcpp::get_logger("EthercatDriver"),
+      "EtherCAT wind-down failed: %s. Releasing the master anyway.", e.what());
+  }
 
   cleanup_master(master_, activated_);
 

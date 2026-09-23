@@ -207,6 +207,9 @@ protected:
 
   /// Release one command interface, named "<joint>/<interface>", to a value that commands no motion.
   void release_joint_command(const std::string & interface_name);
+
+  /// The joint's last read position state, or NaN when it has no position state interface.
+  double joint_position_state(size_t joint_index) const;
 };
 }  // namespace ethercat_driver
 
