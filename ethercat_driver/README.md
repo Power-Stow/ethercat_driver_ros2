@@ -87,8 +87,9 @@ which could never observe the bus coming up.
 Both exits above are checked during the delay as well as during the loop itself.
 Every wake-up is capped at the deadline it serves, so a control period longer than the remaining
 budget does not overshoot it.
-A shutdown request, and then the timeout, take precedence over a bus that has come up in the
-meantime, so a late wake-up or a slow update cannot turn into a success past the budget.
+A shutdown request and the timeout are both checked before each update, so no update is started
+once either applies, and a bus that has come up is only accepted when its update finished inside the
+budget, so a late wake-up or a slow update cannot turn into a success past it.
 
 If you ever experience a slave who won't initialize (i.e. stuck in `INIT`) and whose identity reads `0x00000000:0x00000000` in `ethercat slaves`, it is because the device has not released its EEPROM to the master — its own CPU still owns register `0x0500` — so the master cannot match it against the configured vendor and product code and never configures it.
 `ethercat rescan` usually clears that.

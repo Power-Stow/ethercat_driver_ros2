@@ -1133,20 +1133,20 @@ CallbackReturn EthercatDriver::on_activate(
     clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
   }
 
-  bool running = true;
+  const auto timed_out = [this, &activation_start]()
+    {
+      return activation_timeout_s_ > 0.0 &&
+             monotonic_elapsed_s(activation_start) >= activation_timeout_s_;
+    };
+
   bool operational = false;
-  while (running) {
+  while (true) {
     // wait until next shot
     clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
-    // update EtherCAT bus
 
-    master_->update();
-
-    // check if operational
-    bool isAllInit = true;
-    for (auto & module : ec_modules_) {
-      isAllInit = isAllInit && module->initialized();
-    }
+    // Both exits are checked before the update, not only after it: an update started once shutdown
+    // is requested or the budget is spent can only delay giving up, and its result would not be
+    // accepted anyway. The failure path below still winds down whatever reached OP.
     if (!rclcpp::ok()) {
       // This loop runs on the thread that delivered the robot description, so while it spins the
       // node answers no service and honours no signal: a bus that never reaches OP used to leave
@@ -1155,12 +1155,9 @@ CallbackReturn EthercatDriver::on_activate(
       RCLCPP_WARN(
         rclcpp::get_logger("EthercatDriver"),
         "Shutdown requested while waiting for the EtherCAT bus to become operational.");
-      running = false;
-    } else if (activation_timeout_s_ > 0.0 &&
-      monotonic_elapsed_s(activation_start) >= activation_timeout_s_)
-    {
-      // Checked before accepting an operational bus: capping the requested wake-up does not cap the
-      // actual one, and a late wake-up or a slow update() must not turn into a success past the budget.
+      break;
+    }
+    if (timed_out()) {
       RCLCPP_ERROR(
         rclcpp::get_logger("EthercatDriver"),
         "EtherCAT bus did not become operational within %.1f s. Still waiting on: %s. Check "
@@ -1168,11 +1165,25 @@ CallbackReturn EthercatDriver::on_activate(
         "its EEPROM to the master, which 'ethercat rescan' usually clears.",
         activation_timeout_s_,
         pendingModuleDescription().c_str());
-      running = false;
-    } else if (isAllInit) {
-      running = false;
-      operational = true;
+      break;
     }
+
+    // update EtherCAT bus
+    master_->update();
+
+    // check if operational
+    bool isAllInit = true;
+    for (auto & module : ec_modules_) {
+      isAllInit = isAllInit && module->initialized();
+    }
+    // Only accepted when the update also finished inside the budget: capping the requested wake-up
+    // does not cap the actual one, and a late wake-up or a slow update() must not turn into a success
+    // past it. A late result goes round once more and is reported as the timeout above.
+    if (isAllInit && !timed_out()) {
+      operational = true;
+      break;
+    }
+
     // calculate next shot. carry over nanoseconds into microseconds.
     t.tv_nsec += interval_ns;
     while (t.tv_nsec >= 1000000000) {
