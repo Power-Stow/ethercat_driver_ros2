@@ -756,10 +756,12 @@ void EcMaster::serviceRegisterRequests()
 
     // DC propagation delay (ESC register 0x0928, 4 bytes): static after DC init, so it is read
     // once, and read again after the slave has been offline since the topology may have changed.
-    if (!slave.config_state.online) {
+    if (slave.dc_delay_reg != nullptr && slave.dc_propagation_delay_valid && !slave.config_state.online) {
+      // A valid sample means the request is idle in EC_REQUEST_SUCCESS with the pre-outage data,
+      // so queue a fresh read rather than letting the branch below re-accept that stale buffer.
       slave.dc_propagation_delay_valid = false;
-    }
-    if (slave.dc_delay_reg != nullptr && !slave.dc_propagation_delay_valid) {
+      ecrt_reg_request_read(slave.dc_delay_reg, 0x0928, 4);
+    } else if (slave.dc_delay_reg != nullptr && !slave.dc_propagation_delay_valid) {
       const ec_request_state_t state = ecrt_reg_request_state(slave.dc_delay_reg);
       if (state == EC_REQUEST_SUCCESS) {
         slave.dc_propagation_delay_ns = EC_READ_U32(ecrt_reg_request_data(slave.dc_delay_reg));
