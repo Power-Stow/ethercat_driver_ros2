@@ -58,6 +58,7 @@ class FriendEcCiA402Drive : public ethercat_generic_plugins::EcCiA402Drive
   FRIEND_TEST(EcCiA402DriveTest, ResetWindDownRestoresCommandChannelsForReactivation);
   FRIEND_TEST(EcCiA402DriveTest, ResetWindDownLeavesTheWindDownAbleToRunAgain);
   FRIEND_TEST(EcCiA402DriveTest, StartupFaultResetIsReArmedOnEveryActivation);
+  FRIEND_TEST(EcCiA402DriveTest, FaultStandingAcrossReactivationIsLatchedAfresh);
 };
 
 class EcCiA402DriveTest : public ::testing::Test

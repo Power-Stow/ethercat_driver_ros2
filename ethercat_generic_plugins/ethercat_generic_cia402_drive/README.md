@@ -98,6 +98,9 @@ down on every cycle of the next run, and no automatic transition could take it b
 Operation Enabled.
 It also re-arms `reset_fault_on_startup` on every activation, with or without a prior wind-down,
 so a drive that comes back up in Fault is cleared the same way it is on a fresh start.
+It forgets the drive state as well, so the first status word of each activation is decoded afresh.
+A drive deactivated in Fault that comes back up in Fault, perhaps for a different reason,
+then counts as a new fault: its error code replaces the one latched on `last_error_code` and is logged.
 
 ## Joint Offset Startup Wrap
 

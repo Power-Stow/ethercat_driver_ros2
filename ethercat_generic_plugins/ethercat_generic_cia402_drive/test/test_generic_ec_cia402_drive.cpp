@@ -874,6 +874,8 @@ TEST_F(EcCiA402DriveTest, ResetWindDownLeavesTheWindDownAbleToRunAgain)
   EXPECT_TRUE(plugin_->wind_down_complete());
   EXPECT_EQ(plugin_->quick_stop_hold_until_, std::chrono::steady_clock::time_point{});
 
+  // The next activation reads the drive back up to Operation Enabled before it is wound down again.
+  plugin_->state_ = STATE_OPERATION_ENABLED;
   plugin_->start_wind_down(1.0);
   EXPECT_FALSE(plugin_->wind_down_complete());
 
@@ -909,4 +911,29 @@ TEST_F(EcCiA402DriveTest, StartupFaultResetIsReArmedOnEveryActivation)
   // The next activation, with no wind-down having run, is a fresh start again.
   plugin_->reset_wind_down();
   EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, fault_reset_bit);
+}
+
+TEST_F(EcCiA402DriveTest, FaultStandingAcrossReactivationIsLatchedAfresh)
+{
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+
+  // The first session faults, and the drive is deactivated still in Fault.
+  plugin_->status_word_ = 0x0008;
+  plugin_->error_code_ = 0x2310;
+  plugin_->updateState();
+  ASSERT_EQ(plugin_->state_, STATE_FAULT);
+  ASSERT_EQ(plugin_->last_fault_error_code_, 0x2310);
+
+  plugin_->reset_wind_down();
+  EXPECT_EQ(plugin_->state_, STATE_START);
+
+  // The next activation finds the drive in Fault again, now for a different reason. Without the
+  // reset the fault would look like the old one still standing, and its code would never be latched.
+  plugin_->status_word_ = 0x0008;
+  plugin_->error_code_ = 0x8130;
+  plugin_->updateState();
+
+  EXPECT_EQ(plugin_->state_, STATE_FAULT);
+  EXPECT_EQ(plugin_->last_fault_error_code_, 0x8130);
+  EXPECT_EQ(plugin_->last_fault_status_word_, 0x0008);
 }

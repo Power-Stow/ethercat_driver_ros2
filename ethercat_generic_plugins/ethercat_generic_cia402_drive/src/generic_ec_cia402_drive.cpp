@@ -818,6 +818,15 @@ void EcCiA402Drive::reset_wind_down()
   operation_enabled_reached_ = false;
   startup_fault_reset_logged_ = false;
 
+  // The state is forgotten too, so the first status word of the activation is decoded afresh rather
+  // than compared against the one the last session ended on. A drive that was deactivated in Fault
+  // and comes back up in Fault, perhaps with a different error code, is then a new fault edge, so
+  // latch_fault_error_code() replaces the old record and logs it instead of keeping the stale one.
+  // Until that status word is read the control word is not chosen from a state that no longer holds.
+  state_ = STATE_START;
+  last_state_ = STATE_START;
+  last_status_word_ = -1;
+
   if (!wind_down_requested_) {
     return;
   }
