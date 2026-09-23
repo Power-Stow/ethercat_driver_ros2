@@ -75,3 +75,4 @@ colcon test-result --verbose
 
 - Tx-error / lost-frame counters are not available through the IgH realtime API; the diagnostics
   snapshot reports a working-counter-derived incomplete-cycle count as a lost-frame proxy.
+  Counting starts once the domain working counter has first reached COMPLETE, so bring-up cycles are excluded.

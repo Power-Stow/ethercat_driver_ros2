@@ -1843,6 +1843,12 @@ void EthercatDriver::produceMasterDiagnostics(
     return;
   }
   const auto diag = master_->getDiagnostics();
+  if (!diag.valid) {
+    // The bring-up loop has not run its first EtherCAT cycle yet, so the default-constructed
+    // snapshot (e.g. link_up == false) must not be reported as a failure.
+    stat.summary(DiagnosticStatus::OK, "Waiting for first EtherCAT cycle");
+    return;
+  }
 
   stat.add("slaves_responding", diag.slaves_responding);
   stat.add("link_up", diag.link_up ? "true" : "false");
@@ -1872,6 +1878,10 @@ void EthercatDriver::produceSlaveDiagnostics(
     return;
   }
   const auto diag = master_->getDiagnostics();
+  if (!diag.valid) {
+    stat.summary(DiagnosticStatus::OK, "Waiting for first EtherCAT cycle");
+    return;
+  }
   if (slave_index >= diag.slaves.size()) {
     stat.summary(DiagnosticStatus::WARN, "Slave diagnostics not yet available");
     return;

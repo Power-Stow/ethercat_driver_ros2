@@ -71,6 +71,12 @@ counter, high DC clock drift, or loop overruns → `WARN`.
 
 The IgH realtime API does not expose Tx-error / lost-frame counters directly, so the master status
 reports the working-counter-derived incomplete-cycle count as a lost-frame proxy.
+Counting starts only once the domain working counter has first reached COMPLETE,
+so the incomplete cycles expected while slaves transition towards OP are not counted as losses.
+Until the first EtherCAT cycle has produced a snapshot, the master and slave statuses report `OK` with
+"Waiting for first EtherCAT cycle" rather than a spurious link-down error.
+If a refresh of a register-derived value (AL status code, DC system-time difference) fails,
+that value is omitted until the next successful read instead of reporting the stale sample.
 
 The publisher starts as soon as the master is activated, i.e. **before** the blocking bring-up loop
 that waits for all slaves to reach OP. This means a slave stuck during initialization (for example

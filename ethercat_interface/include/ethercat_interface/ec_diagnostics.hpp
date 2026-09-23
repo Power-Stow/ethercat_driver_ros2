@@ -67,6 +67,8 @@ struct SlaveDiagnostics
 /// diagnostics publisher. All fields mirror values reported by the IgH master.
 struct MasterDiagnostics
 {
+  bool valid = false;               //< False until the cyclic loop has published its first snapshot.
+
   // Master state (ecrt_master_state).
   uint32_t slaves_responding = 0;   //< Number of slaves responding on the bus.
   uint8_t al_states = 0;            //< Bitwise OR of the AL states of all slaves.
@@ -75,7 +77,8 @@ struct MasterDiagnostics
   // Domain state (ecrt_domain_state).
   uint32_t working_counter = 0;     //< Last domain working counter.
   uint8_t wc_state = 0;             //< 0 ZERO, 1 INCOMPLETE, 2 COMPLETE (ec_wc_state_t).
-  uint64_t incomplete_cycle_count = 0;  //< Cumulative cycles with wc_state != COMPLETE (lost-frame proxy).
+  /// Cumulative cycles with wc_state != COMPLETE after the domain first reached COMPLETE (lost-frame proxy).
+  uint64_t incomplete_cycle_count = 0;
   uint64_t update_count = 0;        //< Cumulative EtherCAT cycles executed.
 
   std::vector<SlaveDiagnostics> slaves;

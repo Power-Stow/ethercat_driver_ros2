@@ -109,6 +109,8 @@ struct DomainInfo
 
   ec_domain_t * domain = NULL;
   ec_domain_state_t domain_state = {};
+  /** true once the working counter has reached EC_WC_COMPLETE, i.e. bring-up has finished */
+  bool wc_complete_seen = false;
   uint8_t * domain_pd = NULL;  //< pointer to process domain data
 
   /** domain pdo registration array.

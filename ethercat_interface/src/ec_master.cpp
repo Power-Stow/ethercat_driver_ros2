@@ -596,7 +596,11 @@ void EcMaster::checkDomainState(uint32_t domain)
   }
   // Track incomplete cycles as a lost-frame proxy (the ecrt realtime API does not expose
   // tx-error / lost-frame counters directly).
-  if (diagnostics_enabled_ && ds.wc_state != EC_WC_COMPLETE) {
+  // The working counter is expected to be incomplete while slaves transition towards OP,
+  // so counting only starts once the domain has first reached EC_WC_COMPLETE.
+  if (ds.wc_state == EC_WC_COMPLETE) {
+    domain_info->wc_complete_seen = true;
+  } else if (diagnostics_enabled_ && domain_info->wc_complete_seen) {
     incomplete_cycle_count_.fetch_add(1, std::memory_order_relaxed);
   }
   domain_info->domain_state = ds;
@@ -724,6 +728,8 @@ void EcMaster::serviceRegisterRequests()
         slave.al_status_code_valid = true;
         ecrt_reg_request_read(slave.al_status_reg, 0x0134, 2);
       } else if (state != EC_REQUEST_BUSY) {
+        // Invalidate the previous sample so a failed refresh is not reported as current.
+        slave.al_status_code_valid = false;
         ecrt_reg_request_read(slave.al_status_reg, 0x0134, 2);
       }
     }
@@ -738,6 +744,8 @@ void EcMaster::serviceRegisterRequests()
         slave.dc_system_time_diff_valid = true;
         ecrt_reg_request_read(slave.dc_time_diff_reg, 0x092C, 4);
       } else if (state != EC_REQUEST_BUSY) {
+        // Invalidate the previous sample so a failed refresh is not reported as current.
+        slave.dc_system_time_diff_valid = false;
         ecrt_reg_request_read(slave.dc_time_diff_reg, 0x092C, 4);
       }
     }
@@ -761,6 +769,7 @@ void EcMaster::updateDiagnosticsSnapshot(uint32_t domain)
   // (the vector keeps its capacity and the small strings reuse their buffers). Only an O(1)
   // swap happens under the lock, keeping the real-time critical section minimal.
   MasterDiagnostics & snapshot = diagnostics_scratch_;
+  snapshot.valid = true;
   snapshot.slaves_responding = master_state_.slaves_responding;
   snapshot.al_states = master_state_.al_states;
   snapshot.link_up = master_state_.link_up != 0;
