@@ -20,6 +20,7 @@
 #include <sched.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -27,6 +28,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <exception>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <regex>
@@ -34,6 +37,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
@@ -119,6 +123,33 @@ void cap_wake_up(struct timespec & wake_up, const struct timespec & deadline)
   RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "%s", message.c_str());
   throw std::runtime_error(message);
 }
+
+/// RAII helper that runs a cleanup callback on scope exit only when the scope is left by an exception.
+///
+/// Normal returns are expected to perform their own cleanup (or none, on success),
+/// so the callback fires only if more exceptions are in flight than when the guard was constructed.
+class ScopedCleanupOnException
+{
+public:
+  explicit ScopedCleanupOnException(std::function<void()> cleanup)
+  : cleanup_(std::move(cleanup)), uncaught_exceptions_(std::uncaught_exceptions())
+  {
+  }
+
+  ~ScopedCleanupOnException()
+  {
+    if (std::uncaught_exceptions() > uncaught_exceptions_) {
+      cleanup_();
+    }
+  }
+
+  ScopedCleanupOnException(const ScopedCleanupOnException &) = delete;
+  ScopedCleanupOnException & operator=(const ScopedCleanupOnException &) = delete;
+
+private:
+  std::function<void()> cleanup_;
+  int uncaught_exceptions_;
+};
 
 /// RAII helper that temporarily elevates the calling thread to SCHED_FIFO real-time scheduling for
 /// the duration of a scope, restoring the previous scheduling policy and priority on destruction.
@@ -1168,6 +1199,10 @@ CallbackReturn EthercatDriver::on_activate(
   // activation thread is busy in the loop.
   // Started before the priority elevation below so the publisher thread does not inherit SCHED_FIFO.
   startDiagnostics();
+  // Stop and join the publisher if any later activation step throws (e.g. ScopedFifoPriority),
+  // so it does not outlive a failed activation or leave a joinable thread behind.
+  // Declared before the priority/affinity guards so it runs after they have restored scheduling.
+  const ScopedCleanupOnException diagnostics_cleanup([this]() {stopDiagnostics();});
 
   // Elevate this thread to real-time scheduling for the blocking bring-up loop below. The loop
   // drives master_->update(), which sends the cyclic EtherCAT frames that discipline the
@@ -1731,10 +1766,17 @@ void EthercatDriver::startDiagnostics()
     timing_overrun_count_ = 0;
   }
 
-  diagnostics_node_ = std::make_shared<rclcpp::Node>("ethercat_diagnostics");
+  // Derive the node name and hardware ID from the hardware component name so multiple driver instances
+  // in one controller manager publish distinguishable statuses (the updater prefixes each status name
+  // with the node name). Characters that are not valid in a ROS node name are replaced by '_'.
+  std::string node_name = "ethercat_diagnostics_" + info_.name;
+  std::replace_if(
+    node_name.begin(), node_name.end(),
+    [](unsigned char c) {return !std::isalnum(c) && c != '_';}, '_');
+  diagnostics_node_ = std::make_shared<rclcpp::Node>(node_name);
   diagnostics_updater_ =
     std::make_unique<diagnostic_updater::Updater>(diagnostics_node_, diagnostics_period_s_);
-  diagnostics_updater_->setHardwareID("ethercat_master");
+  diagnostics_updater_->setHardwareID(info_.name);
 
   diagnostics_updater_->add("EtherCAT Master", this, &EthercatDriver::produceMasterDiagnostics);
   diagnostics_updater_->add("EtherCAT RT Timing", this, &EthercatDriver::produceTimingDiagnostics);

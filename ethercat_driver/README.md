@@ -53,9 +53,12 @@ Set on the `<hardware>` element of the `ros2_control` system.
 ### Health diagnostics
 
 When `publish_diagnostics` is `true`, the driver publishes `diagnostic_msgs/DiagnosticArray` on
-`/diagnostics` from a dedicated non-real-time node (`ethercat_diagnostics`), leaving the cyclic
+`/diagnostics` from a dedicated non-real-time node (`ethercat_diagnostics_<hardware_name>`), leaving the cyclic
 `SCHED_FIFO` loop untouched apart from cheap state snapshotting. It integrates with
 `rqt_runtime_monitor` and `diagnostic_aggregator`.
+The node name and hardware ID are derived from the `ros2_control` hardware component name,
+so multiple driver instances in one controller manager publish distinguishable statuses,
+since `diagnostic_updater` prefixes each status name with the node name.
 
 Published `DiagnosticStatus` entries:
 
@@ -77,6 +80,8 @@ bring-up has already succeeded.
 
 When bring-up fails, on a timeout or a shutdown request, `on_activate()` stops the diagnostics
 before it releases the master.
+If any activation step after the publisher has started throws instead,
+the publisher is stopped and joined before the exception propagates.
 
 ### Real-time activation loop
 
