@@ -218,7 +218,8 @@ public:
   virtual void writeData(uint32_t domain = 0);
 
   /** Enable EtherCAT health-diagnostics collection. Must be called before activate() so
-   *  per-slave ESC register requests can be created. Disabled by default (no overhead). */
+   *  per-slave ESC register requests can be created. Disabled by default (no overhead).
+   *  May be called with false after activate() to stop collection, but not concurrently with the cyclic loop. */
   void setDiagnosticsEnabled(bool enabled) {diagnostics_enabled_ = enabled;}
 
   /** @brief Thread-safe copy of the latest EtherCAT health snapshot.

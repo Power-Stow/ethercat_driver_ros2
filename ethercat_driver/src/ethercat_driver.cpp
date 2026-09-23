@@ -1872,38 +1872,56 @@ void EthercatDriver::startDiagnostics()
           produceSlaveDiagnostics(stat, i);
         });
     }
+
+    // The updater has no subscriptions, so rather than spin an executor we simply force an
+    // update at the configured period. force_update() runs every task and publishes immediately.
+    diagnostics_thread_running_ = true;
+    diagnostics_thread_ = std::thread(
+      [this]() {
+        // Sleep in bounded slices so stopDiagnostics() is not blocked by a long period.
+        const auto max_sleep = std::chrono::milliseconds(100);
+        const auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+          std::chrono::duration<double>(diagnostics_period_s_));
+        rclcpp::Clock log_clock(RCL_STEADY_TIME);
+        auto next_publish = std::chrono::steady_clock::now();  // publish on the first iteration
+        while (rclcpp::ok() && diagnostics_thread_running_) {
+          const auto now = std::chrono::steady_clock::now();
+          if (now >= next_publish) {
+            // An exception escaping this thread would call std::terminate(), so a failed
+            // publication is logged and retried on the next period instead.
+            try {
+              diagnostics_updater_->force_update();
+            } catch (const std::exception & e) {
+              RCLCPP_ERROR_THROTTLE(
+                rclcpp::get_logger("EthercatDriver"), log_clock, 10000,
+                "Failed to publish EtherCAT diagnostics: %s", e.what());
+            }
+            next_publish += period;
+            if (next_publish <= now) {
+              // Publishing fell behind; resynchronize rather than publish in a burst.
+              next_publish = now + period;
+            }
+          }
+          std::this_thread::sleep_until(std::min(next_publish, now + max_sleep));
+        }
+      });
   } catch (const std::exception & e) {
     RCLCPP_ERROR(
       rclcpp::get_logger("EthercatDriver"),
       "Failed to set up EtherCAT diagnostics (%s); continuing without diagnostics.", e.what());
+    // Also disable both collection paths, so the real-time loop does not keep servicing register
+    // requests, assembling snapshots and taking the timing mutex for data nobody consumes.
+    // Safe without further synchronization: on_activate() holds ec_mutex_, which read() requires
+    // before touching either flag, and the bring-up loop runs on this thread.
+    diagnostics_thread_running_ = false;
     diagnostics_updater_.reset();
     diagnostics_node_.reset();
+    publish_diagnostics_ = false;
+    if (master_) {
+      master_->setDiagnosticsEnabled(false);
+    }
     return;
   }
-
-  // The updater has no subscriptions, so rather than spin an executor we simply force an
-  // update at the configured period. force_update() runs every task and publishes immediately.
-  diagnostics_thread_running_ = true;
-  diagnostics_thread_ = std::thread(
-    [this]() {
-      // Sleep in bounded slices so stopDiagnostics() is not blocked by a long period.
-      const auto max_sleep = std::chrono::milliseconds(100);
-      const auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-        std::chrono::duration<double>(diagnostics_period_s_));
-      auto next_publish = std::chrono::steady_clock::now();  // publish on the first iteration
-      while (rclcpp::ok() && diagnostics_thread_running_) {
-        const auto now = std::chrono::steady_clock::now();
-        if (now >= next_publish) {
-          diagnostics_updater_->force_update();
-          next_publish += period;
-          if (next_publish <= now) {
-            // Publishing fell behind; resynchronize rather than publish in a burst.
-            next_publish = now + period;
-          }
-        }
-        std::this_thread::sleep_until(std::min(next_publish, now + max_sleep));
-      }
-    });
 
   RCLCPP_INFO(
     rclcpp::get_logger("EthercatDriver"),

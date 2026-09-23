@@ -70,7 +70,9 @@ Published `DiagnosticStatus` entries:
 
 Levels: link down, a slave offline/not-operational/not configured by the master, or a drive fault → `ERROR`;
 incomplete working counter, high DC clock drift, or loop overruns since the previous report → `WARN`.
-A failure to set up the diagnostics node is logged as an error and activation continues without diagnostics.
+A failure to set up the diagnostics node or publisher thread is logged as an error,
+diagnostics collection in the cyclic loop is disabled for that activation, and activation continues without diagnostics.
+A failed publication is logged (throttled) and retried on the next period.
 
 The IgH realtime API does not expose Tx-error / lost-frame counters directly, so the master status
 reports the working-counter-derived incomplete-cycle count as a lost-frame proxy.
