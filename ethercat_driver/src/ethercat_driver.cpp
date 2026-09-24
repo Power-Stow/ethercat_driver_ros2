@@ -20,8 +20,10 @@
 #include <sched.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <limits>
 #include <memory>
 #include <regex>
@@ -45,6 +47,58 @@ void cleanup_master(
   if (master) {
     master->shutdown();
     master.reset();
+  }
+}
+
+/// Seconds elapsed on CLOCK_MONOTONIC since @p since.
+double monotonic_elapsed_s(const struct timespec & since)
+{
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return static_cast<double>(now.tv_sec - since.tv_sec) +
+         static_cast<double>(now.tv_nsec - since.tv_nsec) * 1e-9;
+}
+
+/// How long on_activate() waits after activating the master before its first update, in seconds.
+constexpr double ACTIVATION_INITIAL_DELAY_S = 1.0;
+
+/// How much of the time the master spends re-scanning the bus is kept out of activation_timeout_s,
+/// in seconds.
+/// The master configures no slave while it scans, so a slave on its way up waits out every scan,
+/// and a bus whose slaves are still booting can re-scan several times, each scan taking far longer
+/// than usual while a slave is slow to hand over its EEPROM.
+/// Beyond this much scanning the time counts again, so a bus that never stops re-scanning still
+/// gives up.
+constexpr double ACTIVATION_SCAN_ALLOWANCE_S = 30.0;
+
+/// The CLOCK_MONOTONIC instant @p seconds after @p base.
+struct timespec monotonic_after(const struct timespec & base, double seconds)
+{
+  // Clamped so the conversion to nanoseconds cannot overflow: a budget beyond a billion seconds is
+  // indistinguishable from none.
+  const int64_t offset_ns = static_cast<int64_t>(std::clamp(seconds, 0.0, 1e9) * 1e9);
+  struct timespec result = base;
+  result.tv_sec += static_cast<time_t>(offset_ns / 1000000000);
+  result.tv_nsec += static_cast<long>(offset_ns % 1000000000);  // NOLINT(runtime/int)
+  if (result.tv_nsec >= 1000000000) {
+    result.tv_nsec -= 1000000000;
+    result.tv_sec++;
+  }
+  return result;
+}
+
+/// True when @p instant lies after @p deadline.
+bool monotonic_later(const struct timespec & instant, const struct timespec & deadline)
+{
+  return instant.tv_sec > deadline.tv_sec ||
+         (instant.tv_sec == deadline.tv_sec && instant.tv_nsec > deadline.tv_nsec);
+}
+
+/// Pulls @p wake_up back to @p deadline when it lies beyond it.
+void cap_wake_up(struct timespec & wake_up, const struct timespec & deadline)
+{
+  if (monotonic_later(wake_up, deadline)) {
+    wake_up = deadline;
   }
 }
 
@@ -78,6 +132,9 @@ public:
   explicit ScopedFifoPriority(int priority)
   : thread_(pthread_self()), elevated_priority_(priority)
   {
+    if (priority <= 0) {
+      return;
+    }
     if (const int error = pthread_getschedparam(thread_, &saved_policy_, &saved_param_)) {
       log_and_throw(
         "Failed to get scheduling policy and parameters for the activation thread: " +
@@ -92,6 +149,7 @@ public:
         " for the activation thread: " + std::string(std::strerror(error)));
     }
 
+    active_ = true;
     RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"),
       "Activation thread elevated to SCHED_FIFO priority %d.", priority);
   }
@@ -107,6 +165,9 @@ public:
   /// `on_activate()` calls std::terminate(), which is why the log line is always written first.
   ~ScopedFifoPriority() noexcept(false)
   {
+    if (!active_) {
+      return;
+    }
     if (const int error = pthread_setschedparam(thread_, saved_policy_, &saved_param_)) {
       log_and_throw(
         "Failed to restore the activation thread to scheduling policy " +
@@ -154,6 +215,7 @@ private:
   sched_param saved_param_{};
   int saved_policy_ = 0;
   const int elevated_priority_ = 0;
+  bool active_ = false;
 };
 
 /// RAII helper that temporarily pins the calling thread to a single CPU core for the duration of a
@@ -169,6 +231,9 @@ public:
   : thread_(pthread_self()), pinned_core_(cpu_core)
   {
     CPU_ZERO(&saved_affinity_);
+    if (cpu_core < 0) {
+      return;
+    }
     if (const int error = pthread_getaffinity_np(thread_, sizeof(saved_affinity_),
         &saved_affinity_))
     {
@@ -186,6 +251,7 @@ public:
         ": " + std::string(std::strerror(error)));
     }
 
+    active_ = true;
     RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"),
       "Activation thread pinned to CPU core %d.", cpu_core);
   }
@@ -195,6 +261,9 @@ public:
   /// trade-off that throwing from these destructors accepts.
   ~ScopedCpuAffinity() noexcept(false)
   {
+    if (!active_) {
+      return;
+    }
     if (const int error = pthread_setaffinity_np(thread_, sizeof(saved_affinity_),
         &saved_affinity_))
     {
@@ -236,6 +305,7 @@ private:
   const pthread_t thread_;
   cpu_set_t saved_affinity_{};
   const int pinned_core_ = -1;
+  bool active_ = false;
 };
 }  // namespace
 
@@ -842,6 +912,64 @@ CallbackReturn EthercatDriver::configNetwork()
     }
   }
 
+  // Budget for the activation/bring-up loop (see on_activate()).
+  activation_timeout_s_ = 10.0;
+  if (info_.hardware_parameters.find("activation_timeout_s") != info_.hardware_parameters.end()) {
+    try {
+      activation_timeout_s_ = std::stod(info_.hardware_parameters["activation_timeout_s"]);
+    } catch (std::exception & e) {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"), "Invalid activation_timeout_s (%s)!", e.what());
+      return CallbackReturn::ERROR;
+    }
+    // std::stod accepts "nan" and "inf", which slip past every <= 0 check and into the deadline
+    // arithmetic.
+    if (!std::isfinite(activation_timeout_s_)) {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"), "activation_timeout_s must be a finite number!");
+      return CallbackReturn::ERROR;
+    }
+    // The initial delay makes no update, so a budget it uses up could never observe the bus coming
+    // up: reject it here rather than fail every activation with a misleading timeout.
+    if (activation_timeout_s_ > 0.0 && activation_timeout_s_ <= ACTIVATION_INITIAL_DELAY_S) {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"),
+        "activation_timeout_s (%.3f s) must exceed the %.1f s initial delay of the bring-up loop, "
+        "or be <= 0 to wait indefinitely!",
+        activation_timeout_s_, ACTIVATION_INITIAL_DELAY_S);
+      return CallbackReturn::ERROR;
+    }
+  }
+
+  // Budget for the shutdown wind-down loop (see windDownSlaves()).
+  shutdown_wind_down_timeout_s_ = 1.0;
+  if (info_.hardware_parameters.find("shutdown_wind_down_timeout_s") !=
+    info_.hardware_parameters.end())
+  {
+    try {
+      shutdown_wind_down_timeout_s_ =
+        std::stod(info_.hardware_parameters["shutdown_wind_down_timeout_s"]);
+    } catch (std::exception & e) {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"),
+        "Invalid shutdown_wind_down_timeout_s (%s)!", e.what());
+      return CallbackReturn::ERROR;
+    }
+    if (!std::isfinite(shutdown_wind_down_timeout_s_)) {
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"),
+        "shutdown_wind_down_timeout_s must be a finite number!");
+      return CallbackReturn::ERROR;
+    }
+  }
+
+  // Whether a failed startup config SDO download is fatal (see the download loop below).
+  require_startup_sdo_ = false;
+  if (info_.hardware_parameters.find("require_startup_sdo") != info_.hardware_parameters.end()) {
+    const std::string & value = info_.hardware_parameters["require_startup_sdo"];
+    require_startup_sdo_ = (value == "true" || value == "1" || value == "True");
+  }
+
   // start EC and wait until state operative
 
   master_->setCtrlFrequency(control_frequency_);
@@ -859,9 +987,12 @@ CallbackReturn EthercatDriver::configNetwork()
   }
 
   // configure SDO
+  size_t failed_sdo_count = 0;
   for (auto i = 0ul; i < ec_modules_.size(); i++) {
     for (auto & sdo : ec_modules_[i]->sdo_config) {
-      uint32_t abort_code;
+      // Only written when the drive's CoE layer aborts the transfer, so it has to start at zero for
+      // a failure without a reported abort to be distinguishable.
+      uint32_t abort_code = 0;
       RCLCPP_INFO(
         rclcpp::get_logger("EthercatDriver"),
         "Downloading config SDO for module '%s' at alias %u position %u: index 0x%x subindex 0x%x",
@@ -875,15 +1006,46 @@ CallbackReturn EthercatDriver::configNetwork()
         sdo,
         &abort_code);
       if (ret) {
-        RCLCPP_INFO(
+        ++failed_sdo_count;
+        RCLCPP_ERROR(
           rclcpp::get_logger("EthercatDriver"),
-          "Failed to download config SDO for module '%s' at alias %u position %u with Error: %d",
+          "Failed to download config SDO index 0x%x subindex 0x%x for module '%s' at alias %u "
+          "position %u: %s. CoE abort code 0x%08x%s",
+          sdo.index,
+          sdo.sub_index,
           ec_module_parameters_[i].at("name").c_str(),
           ec_modules_[i]->alias_,
           ec_modules_[i]->position_,
-          abort_code);
+          std::strerror(ret < 0 ? -ret : ret),
+          abort_code,
+          abort_code == 0 ?
+          " (zero: no CoE abort was reported, which usually means the transfer did not reach the "
+          "drive's CoE layer - check 'ethercat slaves' for its state and identity)" : "");
       }
     }
+  }
+
+  if (failed_sdo_count > 0) {
+    if (require_startup_sdo_) {
+      // The startup SDOs carry values such as the drive's speed limit, torque limits and control
+      // gains. Coming up without them silently runs the axis on whatever the drive happens to
+      // hold, which is worth refusing an activation over on a machine that relies on them.
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"),
+        "%zu startup config SDO download(s) failed; refusing to bring the bus up without the "
+        "limits and gains they carry (require_startup_sdo is set).",
+        failed_sdo_count);
+      return CallbackReturn::ERROR;
+    }
+
+    // Default, and what this driver has always done: the bus comes up anyway. Said out loud,
+    // because the drives then run on whatever they already hold.
+    RCLCPP_WARN(
+      rclcpp::get_logger("EthercatDriver"),
+      "%zu startup config SDO download(s) failed; bringing the bus up anyway, so the drives keep "
+      "whatever values they already hold. Set the hardware parameter require_startup_sdo to true "
+      "to refuse the activation instead.",
+      failed_sdo_count);
   }
 
   return CallbackReturn::SUCCESS;
@@ -898,6 +1060,14 @@ CallbackReturn EthercatDriver::on_activate(
     return CallbackReturn::ERROR;
   }
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Starting ...please wait...");
+
+  // The modules are created once, in on_init(), so they survive a deactivate/activate cycle with
+  // whatever state the last wind-down left on them. A wind-down still in force owns the control
+  // word and pins every other command channel to its default, which would keep a drive out of
+  // Operation Enabled for good.
+  for (auto & module : ec_modules_) {
+    module->reset_wind_down();
+  }
 
   // setup master
   if (setupMaster() != CallbackReturn::SUCCESS) {
@@ -939,23 +1109,103 @@ CallbackReturn EthercatDriver::on_activate(
   // Distributed Clocks; sending them with low jitter lets DC slaves converge within the master's
   // DC sync-wait window instead of stalling for the full timeout. Scheduling is restored on exit.
   // Constructed priority-first so destruction restores the affinity before the scheduling policy.
-  const std::unique_ptr<ScopedFifoPriority> activation_priority =
-    activation_thread_priority_ >
-    0 ? std::make_unique<ScopedFifoPriority>(activation_thread_priority_) : nullptr;
-  const std::unique_ptr<ScopedCpuAffinity> activation_affinity =
-    activation_cpu_core_ >= 0 ? std::make_unique<ScopedCpuAffinity>(activation_cpu_core_) : nullptr;
+  // Held by value rather than through a unique_ptr: the guards' destructors throw by design, and
+  // unique_ptr's destructor is noexcept, so a throw from one would call std::terminate(). A guard
+  // given a disabled value (priority <= 0, core < 0) does nothing.
+  const ScopedFifoPriority activation_priority(activation_thread_priority_);
+  const ScopedCpuAffinity activation_affinity(activation_cpu_core_);
 
-  // start after one second
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
-  t.tv_sec++;
+  // Timed from here rather than from the first cycle, so the initial delay counts against
+  // activation_timeout_s instead of being added to it.
+  const struct timespec activation_start = t;
 
-  bool running = true;
-  while (running) {
+  const uint32_t interval_ns = master_->getInterval();
+
+  // Start after the initial delay, which on_init() guarantees is shorter than activation_timeout_s.
+  // Slept one period at a time rather than in one go, so a shutdown request is honoured during the
+  // delay as well. Every wake-up is capped at the deadline it serves, so a control period longer
+  // than the remaining budget cannot overshoot it: the last step of the delay, and of the loop
+  // below, is cut short.
+  const double initial_delay_s = ACTIVATION_INITIAL_DELAY_S;
+  const struct timespec initial_delay_end = monotonic_after(activation_start, initial_delay_s);
+  while (rclcpp::ok() && monotonic_elapsed_s(activation_start) < initial_delay_s) {
+    t.tv_nsec += interval_ns;
+    while (t.tv_nsec >= 1000000000) {
+      t.tv_nsec -= 1000000000;
+      t.tv_sec++;
+    }
+    cap_wake_up(t, initial_delay_end);
+    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
+  }
+
+  // Time the master spends re-scanning the bus is kept out of the budget, up to
+  // ACTIVATION_SCAN_ALLOWANCE_S of it. The master configures no slave while it scans, so counting
+  // that wait would fail a bus that is only slow to come up, while giving it no time at all would
+  // let a bus that never stops re-scanning wait forever.
+  double scan_s = 0.0;
+  double previous_elapsed_s = monotonic_elapsed_s(activation_start);
+  bool was_scanning = false;
+  const auto budget_s = [this, &scan_s]()
+    {
+      return activation_timeout_s_ + std::min(scan_s, ACTIVATION_SCAN_ALLOWANCE_S);
+    };
+  const auto timed_out = [this, &activation_start, &budget_s]()
+    {
+      return activation_timeout_s_ > 0.0 &&
+             monotonic_elapsed_s(activation_start) >= budget_s();
+    };
+
+  bool operational = false;
+  while (true) {
     // wait until next shot
     clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
-    // update EtherCAT bus
 
+    // The interval that just ended counts towards the scan allowance when the master is scanning.
+    // Sampled before the exits, so the budget they check already includes it.
+    const double elapsed_s = monotonic_elapsed_s(activation_start);
+    const bool scanning = master_->scanBusy();
+    if (scanning) {
+      scan_s += elapsed_s - previous_elapsed_s;
+      if (!was_scanning) {
+        RCLCPP_INFO(
+          rclcpp::get_logger("EthercatDriver"),
+          "EtherCAT master is re-scanning the bus and configures no slave until the scan ends. The "
+          "scan does not count against activation_timeout_s, up to %.0f s of scanning in total.",
+          ACTIVATION_SCAN_ALLOWANCE_S);
+      }
+    }
+    was_scanning = scanning;
+    previous_elapsed_s = elapsed_s;
+
+    // Both exits are checked before the update, not only after it: an update started once shutdown
+    // is requested or the budget is spent can only delay giving up, and its result would not be
+    // accepted anyway. The failure path below still winds down whatever reached OP.
+    if (!rclcpp::ok()) {
+      // This loop runs on the thread that delivered the robot description, so while it spins the
+      // node answers no service and honours no signal: a bus that never reaches OP used to leave
+      // ros2_control_node to be SIGKILLed. Give up as soon as shutdown is requested, and ahead of
+      // a bus that has come up meanwhile: activating into a shutdown helps nobody.
+      RCLCPP_WARN(
+        rclcpp::get_logger("EthercatDriver"),
+        "Shutdown requested while waiting for the EtherCAT bus to become operational.");
+      break;
+    }
+    if (timed_out()) {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("EthercatDriver"),
+        "EtherCAT bus did not become operational within %.1f s, not counting %.1f s the master "
+        "spent re-scanning it. Still waiting on: %s. Check 'ethercat slaves': a slave stuck in "
+        "INIT whose identity reads 0x00000000 has not released its EEPROM to the master, which "
+        "'ethercat rescan' usually clears.",
+        activation_timeout_s_,
+        std::min(scan_s, ACTIVATION_SCAN_ALLOWANCE_S),
+        pendingModuleDescription().c_str());
+      break;
+    }
+
+    // update EtherCAT bus
     master_->update();
 
     // check if operational
@@ -963,15 +1213,45 @@ CallbackReturn EthercatDriver::on_activate(
     for (auto & module : ec_modules_) {
       isAllInit = isAllInit && module->initialized();
     }
-    if (isAllInit) {
-      running = false;
+    // Only accepted when the update also finished inside the budget: capping the requested wake-up
+    // does not cap the actual one, and a late wake-up or a slow update() must not turn into a
+    // success past it. A late result goes round once more and is reported as the timeout above.
+    if (isAllInit && !timed_out()) {
+      operational = true;
+      break;
     }
+
     // calculate next shot. carry over nanoseconds into microseconds.
-    t.tv_nsec += master_->getInterval();
+    t.tv_nsec += interval_ns;
     while (t.tv_nsec >= 1000000000) {
       t.tv_nsec -= 1000000000;
       t.tv_sec++;
     }
+    if (activation_timeout_s_ > 0.0) {
+      cap_wake_up(t, monotonic_after(activation_start, budget_s()));
+    }
+  }
+
+  if (!operational) {
+    // On a bus that is only part of the way up, the drives that already reached Operation Enabled
+    // would otherwise lose their cyclic data while energised. The ones still pending report the
+    // wind-down complete at once, so this costs nothing when no drive got that far. The thread is
+    // still under the activation's real-time guards, so the wind-down reuses them rather than
+    // nesting its own: a nested guard saves the already-elevated state, and its restore checks
+    // throw from destructors while the other guard's throw is unwinding, which calls
+    // std::terminate().
+    try {
+      windDownSlaves(false);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(
+        rclcpp::get_logger("EthercatDriver"),
+        "EtherCAT wind-down failed: %s. Releasing the master anyway.", e.what());
+    }
+    if (master_) {
+      master_->shutdown();
+      master_.reset();
+    }
+    return CallbackReturn::ERROR;
   }
 
   RCLCPP_INFO(
@@ -982,13 +1262,133 @@ CallbackReturn EthercatDriver::on_activate(
   return CallbackReturn::SUCCESS;
 }
 
+std::string EthercatDriver::pendingModuleDescription() const
+{
+  std::string pending;
+  for (size_t i = 0; i < ec_modules_.size(); ++i) {
+    if (ec_modules_[i]->initialized()) {
+      continue;
+    }
+
+    std::string name = "<unnamed>";
+    if (i < ec_module_parameters_.size()) {
+      const auto name_it = ec_module_parameters_[i].find("name");
+      if (name_it != ec_module_parameters_[i].end()) {
+        name = name_it->second;
+      }
+    }
+
+    if (!pending.empty()) {
+      pending += ", ";
+    }
+    pending += name + " (alias " + std::to_string(ec_modules_[i]->alias_) +
+      " position " + std::to_string(ec_modules_[i]->position_) + ")";
+  }
+
+  return pending.empty() ? "none" : pending;
+}
+
+void EthercatDriver::windDownSlaves(bool elevate_scheduling)
+{
+  // Deliberately not gated on activated_: a failed bring-up winds down whatever reached OP too.
+  // The master is released on every exit from ACTIVE, so a released bus still returns here.
+  if (!master_ || !master_->isValid()) {
+    return;
+  }
+
+  const uint32_t interval_ns = master_->getInterval();
+  if (interval_ns == 0 || shutdown_wind_down_timeout_s_ <= 0.0) {
+    return;
+  }
+
+  RCLCPP_INFO(
+    rclcpp::get_logger("EthercatDriver"),
+    "Winding down %zu EtherCAT module(s), at most %.3f s ...",
+    ec_modules_.size(), shutdown_wind_down_timeout_s_);
+
+  for (auto & module : ec_modules_) {
+    module->start_wind_down(shutdown_wind_down_timeout_s_);
+  }
+
+  // The bring-up loop's real-time treatment applies here for the same reason: a scheduling gap
+  // stops the cyclic frames for longer than a DC slave's sync watchdog allows, which is exactly the
+  // synchronization error this loop exists to avoid. Constructed priority-first so destruction
+  // restores the affinity before the scheduling policy. Held by value so a throw from their
+  // destructors reaches the caller's try/catch; see on_activate().
+  const ScopedFifoPriority wind_down_priority(elevate_scheduling ? activation_thread_priority_ : 0);
+  const ScopedCpuAffinity wind_down_affinity(elevate_scheduling ? activation_cpu_core_ : -1);
+
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  // Bounded by elapsed time rather than a count of nominal cycles: after a scheduling stall or an
+  // update() that overruns its period, the absolute deadlines below are already in the past, and a
+  // cycle count would let the catch-up cycles hold deactivation well beyond the timeout.
+  const struct timespec wind_down_start = t;
+  // The first wind-down frame goes out straight away, and no update is started at or past the
+  // deadline: an update begun there would take deactivation over the budget by however long it
+  // runs. Stopping before the sleep rather than after it also keeps a control period longer than
+  // the remaining budget from holding deactivation for a full period past it.
+  const struct timespec wind_down_deadline =
+    monotonic_after(wind_down_start, shutdown_wind_down_timeout_s_);
+
+  bool complete = false;
+  while (true) {
+    master_->update();
+
+    complete = true;
+    for (auto & module : ec_modules_) {
+      complete = complete && module->wind_down_complete();
+    }
+    if (complete) {
+      break;
+    }
+
+    // calculate next shot. carry over nanoseconds into seconds.
+    t.tv_nsec += interval_ns;
+    while (t.tv_nsec >= 1000000000) {
+      t.tv_nsec -= 1000000000;
+      t.tv_sec++;
+    }
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (!monotonic_later(wind_down_deadline, t) || !monotonic_later(wind_down_deadline, now)) {
+      break;
+    }
+    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
+  }
+
+  if (complete) {
+    RCLCPP_INFO(
+      rclcpp::get_logger("EthercatDriver"),
+      "Wind-down complete after %.3f s.",
+      monotonic_elapsed_s(wind_down_start));
+  } else {
+    RCLCPP_WARN(
+      rclcpp::get_logger("EthercatDriver"),
+      "Wind-down did not complete within %.3f s. The master is released with at least one slave "
+      "still energised, which can leave that slave reporting a synchronization error.",
+      shutdown_wind_down_timeout_s_);
+  }
+}
+
 CallbackReturn EthercatDriver::on_deactivate(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {
   const std::lock_guard<std::mutex> lock(ec_mutex_);
-  activated_ = false;
 
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Stopping ...please wait...");
+
+  // A wind-down that throws must not cost us the master release: the slaves are worse off holding
+  // an activated master than they are having skipped the wind-down.
+  try {
+    windDownSlaves();
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(
+      rclcpp::get_logger("EthercatDriver"),
+      "EtherCAT wind-down failed: %s. Releasing the master anyway.", e.what());
+  }
+
+  activated_ = false;
 
   cleanup_master(master_, activated_);
 
@@ -996,6 +1396,73 @@ CallbackReturn EthercatDriver::on_deactivate(
     rclcpp::get_logger("EthercatDriver"), "System successfully stopped!");
 
   return CallbackReturn::SUCCESS;
+}
+
+hardware_interface::return_type EthercatDriver::perform_command_mode_switch(
+  const std::vector<std::string> & /*start_interfaces*/,
+  const std::vector<std::string> & stop_interfaces)
+{
+  // Starting interfaces are left alone: a controller that has just claimed one writes it before the
+  // next cycle reaches the bus, and preempting that would overwrite its first command.
+  for (const auto & interface_name : stop_interfaces) {
+    release_joint_command(interface_name);
+  }
+  return hardware_interface::return_type::OK;
+}
+
+double EthercatDriver::joint_position_state(size_t joint_index) const
+{
+  const auto & state_interfaces = info_.joints[joint_index].state_interfaces;
+  for (size_t k = 0; k < state_interfaces.size(); k++) {
+    if (state_interfaces[k].name == hardware_interface::HW_IF_POSITION) {
+      return hw_joint_states_[joint_index][k];
+    }
+  }
+  return std::numeric_limits<double>::quiet_NaN();
+}
+
+void EthercatDriver::release_joint_command(const std::string & interface_name)
+{
+  for (size_t j = 0; j < info_.joints.size(); j++) {
+    for (size_t i = 0; i < info_.joints[j].command_interfaces.size(); i++) {
+      const std::string & name = info_.joints[j].command_interfaces[i].name;
+      if (interface_name != info_.joints[j].name + "/" + name) {
+        continue;
+      }
+
+      if (name == hardware_interface::HW_IF_POSITION) {
+        // Held at the joint's last read position. A NaN is not "stay where you are" for every
+        // module: the channel managers write their configured default in place of it, which only
+        // the CiA-402 plugin keeps at the last read position, so a generic channel defaulting to
+        // zero would be commanded to zero. Without a position reading to hold, the last command is
+        // left in place.
+        const double held_position = joint_position_state(j);
+        if (std::isnan(held_position)) {
+          RCLCPP_WARN(
+            rclcpp::get_logger("EthercatDriver"),
+            "Command interface '%s' was released without a position reading to hold; its last "
+            "command is left in place.",
+            interface_name.c_str());
+          return;
+        }
+        hw_joint_commands_[j][i] = held_position;
+      } else if (name == hardware_interface::HW_IF_VELOCITY || // NOLINT
+        name == hardware_interface::HW_IF_EFFORT)
+      {
+        hw_joint_commands_[j][i] = 0.0;
+      } else {
+        // The control word, the mode of operation and the fault reset are not motion, and a drive
+        // that is between controllers should keep the mode and the state machine it already had.
+        return;
+      }
+
+      RCLCPP_INFO(
+        rclcpp::get_logger("EthercatDriver"),
+        "Released command interface '%s' to a value that commands no motion.",
+        interface_name.c_str());
+      return;
+    }
+  }
 }
 
 hardware_interface::return_type EthercatDriver::read(
@@ -1025,6 +1492,16 @@ CallbackReturn EthercatDriver::on_shutdown(
 
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Shutdown cleanup ...please wait...");
 
+  // Only does anything when the component is finalized straight from ACTIVE; after on_deactivate()
+  // the master is already released and this returns immediately.
+  try {
+    windDownSlaves();
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(
+      rclcpp::get_logger("EthercatDriver"),
+      "EtherCAT wind-down failed: %s. Releasing the master anyway.", e.what());
+  }
+
   cleanup_master(master_, activated_);
   cleanupPluginsForShutdown();
 
@@ -1039,6 +1516,17 @@ CallbackReturn EthercatDriver::on_error(
   const std::lock_guard lock(ec_mutex_);
 
   RCLCPP_ERROR(rclcpp::get_logger("EthercatDriver"), "Error cleanup ...please wait...");
+
+  // ERROR can be entered straight from ACTIVE, after an exception in a cyclic read or write, with
+  // drives still in Operation Enabled. Released without a wind-down they would lose their cyclic
+  // data energised. When the master is already gone this returns immediately.
+  try {
+    windDownSlaves();
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(
+      rclcpp::get_logger("EthercatDriver"),
+      "EtherCAT wind-down failed: %s. Releasing the master anyway.", e.what());
+  }
 
   cleanup_master(master_, activated_);
 

@@ -51,6 +51,19 @@ public:
   virtual const ec_sync_info_t * syncs() {return NULL;}
   virtual bool initialized() {return true;}
   virtual void set_state_is_operational(bool value) {is_operational_ = value;}
+  /** Begin the cyclic wind-down towards a safe, de-energised state.
+   *  Called while the master is still exchanging process data, so that a slave which has to be
+   *  commanded down (a CiA-402 drive, for instance) can be, before the cyclic frames stop.
+   *  @param timeout_s Budget the caller allows before it stops cycling regardless, measured in
+   *  monotonic time rather than in cycles. */
+  virtual void start_wind_down(double /*timeout_s*/) {}
+  /** True once the slave is de-energised and the cyclic exchange may stop.
+   *  Slaves with nothing to wind down report completion immediately. */
+  virtual bool wind_down_complete() const noexcept {return true;}
+  /** Discard any state left by a previous wind-down, so the slave can be commanded normally
+   *  again. The driver calls this on every activation, because the same slave instances are
+   *  reused across a deactivate/activate cycle. */
+  virtual void reset_wind_down() {}
   /** Assign activate DC synchronization. return activate word*/
   virtual int assign_activate_dc_sync() {return 0x00;}
   /** number of elements in the syncs array. */

@@ -5,6 +5,109 @@
 `ethercat_generic_cia402_drive` provides a generic CiA402 EtherCAT slave plugin for `ethercat_driver_ros2`.
 It maps configured RPDO/TPDO channels to ros2_control interfaces and handles CiA402 state transitions.
 
+## Shutdown Wind-Down
+
+When `ethercat_driver` deactivates, it asks every module to wind down while the cyclic exchange is
+still running (`EcSlave::start_wind_down()`). This plugin uses that window to take the drive out of
+Operation Enabled before the frames stop, because a drive that loses its process data while still
+enabled reports AL status `0x001A` ("Synchronization error") and may latch a communication fault
+that survives into the next start-up.
+
+The control word is driven from the observed CiA-402 state, and the stop it uses depends on whether
+the drive declares `quick_stop_supported` in its slave config:
+
+| State | `quick_stop_supported: false` (default) | `quick_stop_supported: true` |
+| ----- | --------------------------------------- | ---------------------------- |
+| Operation Enabled | Disable Operation (`0x0007`) | Quick Stop (`0x000B`) |
+| Quick Stop Active | Disable Voltage (`0x0000`) | Quick Stop, then Disable Voltage once the ramp budget is spent |
+| Fault Reaction Active | Disable Voltage (`0x0000`), still winding down | Disable Voltage (`0x0000`), still winding down |
+| anything else | Disable Voltage (`0x0000`), wind-down complete | Disable Voltage (`0x0000`), wind-down complete |
+
+The wind-down reports itself complete as soon as the drive function is disabled, which is every
+state except Operation Enabled, Quick Stop Active and Fault Reaction Active. Disable Voltage still
+goes out on that cycle, so the drive carries the command down to Switch On Disabled on its own once
+the frames stop.
+
+Fault Reaction Active is not a stopped state: the drive is running its fault reaction, decelerating
+under power, and reaches Fault by itself once that finishes. The wind-down keeps cycling until it
+gets there, so the master is not released onto a moving axis. It needs no budget of its own, unlike
+the quick stop ramp, because the reaction is transient by specification — a drive still in it when
+`shutdown_wind_down_timeout_s` expires has something wrong with it, and the timeout warning is then
+the right outcome. Fault itself is a completed state: the power stage is off, and the fault is left
+standing rather than reset.
+
+Waiting to *observe* Switch On Disabled would be stricter but wrong in practice: a drive can leave
+Operation Enabled within a few cycles and then park in Ready to Switch On while its DC bus is live,
+so the caller would spend its whole `shutdown_wind_down_timeout_s` waiting for a transition the
+drive never makes, and warn about a slave that is already de-energised.
+
+Half of the driver's `shutdown_wind_down_timeout_s` budget is given to the quick stop ramp,
+timed on the monotonic clock from the start of the wind-down; the
+remainder is left for Disable Voltage to be commanded and take effect. Drives whose quick stop
+option code (`0x605A`) takes them to Switch On Disabled leave Quick Stop Active on their own and
+finish early; the ones configured to hold position there are disabled once the budget is spent.
+
+### `quick_stop_supported`
+
+Quick Stop is the better shutdown where the drive implements it: it decelerates on the quick stop
+ramp (`0x6085`) instead of dropping the power stage and leaving the axis to coast or to its brake.
+It is opt-in per drive, and off by default, because a drive that does not implement it can respond
+destructively.
+
+This is not theoretical. A drive whose datasheet listed Quick Stop as not supported, and which had
+neither `0x605A` nor `0x6085` configured, answered a Quick Stop from Operation Enabled by clearing
+status word bit 12 (target position ignored), abandoning the commanded position and
+**accelerating** the axis to roughly twice its commanded velocity under its own torque. It held it
+there for a few hundred milliseconds, building a large following error, until it dropped out of
+Operation Enabled by itself. The axis only stopped once the wind-down commanded Disable Voltage
+and the brake engaged.
+
+Before setting it to `true` on a drive, confirm the datasheet supports the function, that `0x605A`
+and `0x6085` are configured, and verify the behaviour under motion on a test rig.
+
+### While the wind-down runs
+
+- the wind-down owns the control word, whatever `auto_state_transitions` is set to, so neither the
+  automatic state transitions nor a fault reset can take the drive back up to Operation Enabled,
+- the motion setpoints fall back to their configured defaults — zero velocity, zero torque and
+  the last read position — so a setpoint left behind by a controller that has already stopped is
+  not replayed into a drive that is being brought down; the mode of operation and any other
+  non-motion channel are left as commanded, so the drive is not switched mode mid-stop,
+- a standing fault is deliberately not reset: clearing it on the way out would hide it from the
+  next start-up.
+
+The wind-down is complete at the end of a cycle in which Disable Voltage went out,
+and the status word read on that same cycle shows a state with the drive function disabled:
+Not Ready to Switch On, Switch On Disabled, Ready to Switch On, Switched On or Fault.
+The control word is chosen from the previous cycle's state, so a drive that faulted in between is
+judged on its Fault Reaction Active rather than released while it still decelerates.
+Quick Stop Active, Fault Reaction Active and a status word that decodes to no CiA-402 state keep the
+frames going until a known disabled state is read, or the caller's timeout expires.
+
+The cached EtherCAT operational flag plays no part in this, because the master refreshes it only
+every few cycles and a drive can reach Operation Enabled in between.
+The wind-down control word goes out whether or not the flag is set, and a slave outside OP ignores it.
+A drive that never became operational reads its zeroed status word as Not Ready to Switch On,
+so it completes after a single cycle.
+
+### Reactivation
+
+`reset_wind_down()` releases the control word and puts every command channel's `override_command`
+back the way it was when the wind-down started. The driver calls it on activation, because the plugin
+instance outlives a deactivate/activate cycle: without the reset the drive would be commanded
+down on every cycle of the next run, and no automatic transition could take it back up to
+Operation Enabled.
+It also re-arms `reset_fault_on_startup` on every activation, with or without a prior wind-down,
+so a drive that comes back up in Fault is cleared the same way it is on a fresh start.
+The startup reset only covers a fault the drive comes up in: once the drive has been seen in a
+non-fault state past Not Ready to Switch On, a fault is this session's,
+and it is cleared only by `auto_fault_reset` or the fault reset command interface.
+A fault reset requested through that interface in the previous session, and never consumed because
+the drive was not in Fault, is discarded rather than carried into the next one.
+It forgets the drive state as well, so the first status word of each activation is decoded afresh.
+A drive deactivated in Fault that comes back up in Fault, perhaps for a different reason,
+then counts as a new fault: its error code replaces the one latched on `last_error_code` and is logged.
+
 ## Joint Offset Startup Wrap
 
 Some absolute encoders only report their power-up angle within a principal interval such as `[-pi, pi]`, even though

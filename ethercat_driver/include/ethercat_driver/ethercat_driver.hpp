@@ -70,6 +70,22 @@ public:
   CallbackReturn on_error(const rclcpp_lifecycle::State & previous_state) override;
 
   ETHERCAT_DRIVER_PUBLIC
+  /// Neutralise the command interfaces a controller is giving up, so nothing stale is left behind.
+  /**
+   * A command interface keeps its last value when the controller writing it is deactivated: nothing in
+   * ros2_control clears it, and this driver goes on writing it to the drive every cycle. That is a
+   * setpoint from before the switch being commanded indefinitely afterwards, and it is how a drive comes
+   * back from a fault reset and steps the axis to wherever it was told to go before the fault.
+   *
+   * Position interfaces are released to NaN, which the channel managers turn into the configured default,
+   * and for a CiA-402 position channel that default is the last read position, so the drive holds where
+   * it is. Velocity and effort are released to zero. Anything else is left alone, since only the
+   * interfaces that move an axis are unsafe to leave stale.
+   */
+  hardware_interface::return_type perform_command_mode_switch(
+    const std::vector<std::string> & start_interfaces,
+    const std::vector<std::string> & stop_interfaces) override;
+
   hardware_interface::return_type read(const rclcpp::Time &, const rclcpp::Duration &) override;
 
   ETHERCAT_DRIVER_PUBLIC
@@ -90,6 +106,33 @@ protected:
   virtual CallbackReturn setupMaster();
 
   CallbackReturn configNetwork();
+
+  /** @brief Command every module into its safe, de-energised state with process data still running.
+   *
+   * Runs the cyclic exchange from the calling thread, the way `on_activate()` does for bring-up, so
+   * that a CiA-402 drive can be walked down to Switch On Disabled before the frames stop. Drives
+   * that lose their cyclic data while still in Operation Enabled report a synchronization error and
+   * can latch a communication fault that survives into the next start-up.
+   *
+   * Returns once every module reports the wind-down complete or `shutdown_wind_down_timeout_s_`
+   * has elapsed, whichever comes first.
+   * Also runs when `on_activate()` gives up on a bus that is only partly operational,
+   * so a drive that already reached Operation Enabled is not left energised.
+   *
+   * @param elevate_scheduling Apply `activation_thread_priority` and `activation_cpu_core` for the
+   * duration of the loop. False when the caller already holds them, as the failed bring-up does:
+   * the scheduling guards are not nestable.
+   */
+  void windDownSlaves(bool elevate_scheduling = true);
+
+  /** @brief Name the modules that have not reached their operational state yet.
+   *
+   * Used for the activation timeout message, so the log says which drive the bus is waiting on
+   * rather than only that it timed out.
+   *
+   * @return Comma separated `name (alias N position N)` entries, or `none` if every module is up.
+   */
+  std::string pendingModuleDescription() const;
 
   /** @brief Load transfer config YAML file
    * One use case is to load transfers for FailSafe Over EtherCAT Safety
@@ -143,6 +186,15 @@ protected:
   int activation_thread_priority_ = 0;
   /** CPU core the activation/bring-up loop is pinned to; < 0 leaves the CPU affinity unchanged. */
   int activation_cpu_core_ = -1;
+  /** Budget in seconds for the shutdown wind-down loop; <= 0 skips the wind-down entirely. */
+  double shutdown_wind_down_timeout_s_ = 1.0;
+  /** Budget in seconds for the activation/bring-up loop; <= 0 waits indefinitely.
+    * Time the master spends re-scanning the bus is added on top, up to ACTIVATION_SCAN_ALLOWANCE_S.
+    */
+  double activation_timeout_s_ = 10.0;
+  /** Whether a failed startup config SDO download refuses the activation. Off by default, so
+   *  the bus still comes up on whatever the drives already hold, as it always has. */
+  bool require_startup_sdo_ = false;
 
   std::shared_ptr<ethercat_interface::EcMaster> master_;
   std::mutex ec_mutex_;
@@ -158,6 +210,13 @@ protected:
 
   /** Empty interfaces */
   std::vector<double> empty_interface_;
+
+  /// Release one command interface, named "<joint>/<interface>", to a value that commands no
+  /// motion.
+  void release_joint_command(const std::string & interface_name);
+
+  /// The joint's last read position state, or NaN when it has no position state interface.
+  double joint_position_state(size_t joint_index) const;
 };
 }  // namespace ethercat_driver
 

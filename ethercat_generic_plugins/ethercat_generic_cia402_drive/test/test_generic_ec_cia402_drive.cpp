@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <chrono>
 #include <map>
 #include <limits>
 #include <pluginlib/class_loader.hpp>
@@ -108,6 +109,7 @@ TEST_F(EcCiA402DriveTest, SlaveSetupDriveFromConfig)
   ASSERT_EQ(plugin_->product_id_, 0x07030924);
   ASSERT_EQ(plugin_->assign_activate_, 0x0321);
   ASSERT_EQ(plugin_->auto_fault_reset_, false);
+  ASSERT_EQ(plugin_->quick_stop_supported_, false) << "Quick Stop must be opt-in per drive";
 
   ASSERT_EQ(plugin_->rpdos_.size(), 1);
   ASSERT_EQ(plugin_->rpdos_[0].index, 0x1607);
@@ -208,6 +210,8 @@ TEST_F(EcCiA402DriveTest, EcWriteRPDOFromCommandInterface)
   auto channels = plugin_->pdo_channels_info_;
   ASSERT_EQ(channels[2]->command_interface_index(), 1);
   plugin_->mode_of_operation_display_ = 10;
+  // The torque setpoint only follows the command interface in Operation Enabled.
+  plugin_->state_ = STATE_OPERATION_ENABLED;
   uint8_t domain_address[2];
   plugin_->processData(2, domain_address);
   ASSERT_EQ(channels[2]->data().last_value, 42);
@@ -371,6 +375,8 @@ TEST_F(EcCiA402DriveTest, JointOffsetCompensatesCspCommandPosition)
   plugin_->joint_offset_ = 2.5;
   plugin_->is_operational_ = true;
   plugin_->mode_of_operation_display_ = 8;
+  // The target position only follows the command interface in Operation Enabled.
+  plugin_->state_ = STATE_OPERATION_ENABLED;
 
   uint8_t domain_address[4];
   EC_WRITE_S32(domain_address, 0);
@@ -464,4 +470,538 @@ TEST_F(EcCiA402DriveTest, JointOffsetStartupWrapWaitsForSlaveData)
   EXPECT_NEAR(plugin_->joint_offset_, 3.2831853071795862, 1e-9);
   EXPECT_NEAR(plugin_->last_position_, -0.7168146928204138, 1e-9);
   EXPECT_NEAR(plugin_->state_interface_ptr_->at(0), -0.7168146928204138, 1e-9);
+}
+
+TEST_F(EcCiA402DriveTest, WindDownDisablesOperationFromOperationEnabled)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_OPERATION_ENABLED;
+
+  plugin_->start_wind_down(1.0);
+  EXPECT_FALSE(plugin_->wind_down_complete());
+
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x000F);
+  plugin_->processData(4, domain_address);
+
+  // Disable Operation, never Quick Stop: a drive whose quick stop option code and deceleration are
+  // not configured can respond to Quick Stop by abandoning the commanded position and accelerating.
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0007);
+  EXPECT_FALSE(plugin_->wind_down_complete());
+}
+
+TEST_F(EcCiA402DriveTest, WindDownQuickStopsWhenTheDriveSupportsIt)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_OPERATION_ENABLED;
+  plugin_->quick_stop_supported_ = true;
+
+  plugin_->start_wind_down(1.0);
+
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x000F);
+  plugin_->processData(4, domain_address);
+
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x000B);
+}
+
+TEST_F(EcCiA402DriveTest, WindDownDisablesVoltageWhenTheQuickStopHoldElapses)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_QUICK_STOP_ACTIVE;
+  plugin_->quick_stop_supported_ = true;
+
+  plugin_->start_wind_down(1.0);
+
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x000B);
+  plugin_->processData(4, domain_address);
+
+  // Still on the quick stop ramp, so the command is held.
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x000B);
+
+  // A drive whose quick stop option code holds position in Quick Stop Active never leaves it on
+  // its own, so once the ramp budget is spent the voltage is disabled.
+  plugin_->quick_stop_hold_until_ = std::chrono::steady_clock::now();
+  plugin_->processData(4, domain_address);
+
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  plugin_->update_wind_down_complete();
+  EXPECT_FALSE(plugin_->wind_down_complete());
+}
+
+TEST_F(EcCiA402DriveTest, WindDownDisablesVoltageOnceTheDriveIsSwitchedOn)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_SWITCH_ON;
+
+  plugin_->start_wind_down(1.0);
+
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x0007);
+  plugin_->processData(4, domain_address);
+
+  // Switched On has the drive function disabled, so the wind-down is done: Disable Voltage goes
+  // out on this same cycle and the drive carries it down to Switch On Disabled by itself.
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  plugin_->update_wind_down_complete();
+  EXPECT_TRUE(plugin_->wind_down_complete());
+}
+
+TEST_F(EcCiA402DriveTest, WindDownCompletesWhenTheDriveParksInReadyToSwitchOn)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_READY_TO_SWITCH_ON;
+
+  plugin_->start_wind_down(1.0);
+
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x0000);
+  plugin_->processData(4, domain_address);
+
+  // A drive can park here rather than in Switch On Disabled while its DC bus is live. Waiting for
+  // a transition it never makes would cost the caller its whole timeout for nothing.
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  plugin_->update_wind_down_complete();
+  EXPECT_TRUE(plugin_->wind_down_complete());
+}
+
+TEST_F(EcCiA402DriveTest, WindDownLeavesQuickStopActiveRatherThanHoldingIt)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_QUICK_STOP_ACTIVE;
+
+  plugin_->start_wind_down(1.0);
+
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x000B);
+  plugin_->processData(4, domain_address);
+
+  // Whoever put the drive into Quick Stop Active, the wind-down's job is to get it out and
+  // de-energised rather than to wait on a ramp it did not command.
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+}
+
+TEST_F(EcCiA402DriveTest, WindDownCompletesOnceTheDriveIsDeEnergised)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_SWITCH_ON_DISABLED;
+
+  plugin_->start_wind_down(1.0);
+  EXPECT_FALSE(plugin_->wind_down_complete());
+
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x0007);
+  plugin_->processData(4, domain_address);
+
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  plugin_->update_wind_down_complete();
+  EXPECT_TRUE(plugin_->wind_down_complete());
+}
+
+TEST_F(EcCiA402DriveTest, WindDownHoldsTheLastReadPositionInCsp)
+{
+  std::unordered_map<std::string, std::string> slave_parameters;
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {42.5, std::numeric_limits<double>::quiet_NaN()};
+  slave_parameters["state_interface/position"] = "0";
+  slave_parameters["command_interface/position"] = "0";
+  slave_parameters["command_interface/mode_of_operation"] = "1";
+  plugin_->parameters_ = slave_parameters;
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_OPERATION_ENABLED;
+  plugin_->mode_of_operation_display_ = 8;
+  plugin_->last_position_ = 10.0;
+
+  uint8_t domain_address[4];
+  EC_WRITE_S32(domain_address, 0);
+  plugin_->processData(0, domain_address);
+
+  // Before the wind-down the drive follows the commanded position.
+  ASSERT_EQ(EC_READ_S32(domain_address), 42);
+
+  plugin_->start_wind_down(1.0);
+  plugin_->processData(0, domain_address);
+
+  // During the wind-down a setpoint left behind by a stopped controller is not replayed.
+  EXPECT_EQ(EC_READ_S32(domain_address), 10);
+}
+
+TEST_F(EcCiA402DriveTest, WindDownCompletesAfterOneCycleWhenNeverOperational)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = false;
+  // A slave that never reached OP leaves its status word zeroed, which decodes to this.
+  plugin_->state_ = STATE_NOT_READY_TO_SWITCH_ON;
+
+  plugin_->start_wind_down(1.0);
+  EXPECT_FALSE(plugin_->wind_down_complete());
+
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x0000);
+  plugin_->processData(4, domain_address);
+  plugin_->update_wind_down_complete();
+
+  // The drive is de-energised by the status word alone, so the wind-down does not hold up the
+  // caller.
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  EXPECT_TRUE(plugin_->wind_down_complete());
+}
+
+TEST_F(EcCiA402DriveTest, WindDownCommandsADriveWhoseOperationalFlagIsStale)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  // The master polls slave states only every few cycles, so the drive can be in OP and Operation
+  // Enabled while the cached flag still says it is not.
+  plugin_->is_operational_ = false;
+  plugin_->state_ = STATE_OPERATION_ENABLED;
+
+  plugin_->start_wind_down(1.0);
+  EXPECT_FALSE(plugin_->wind_down_complete());
+
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x000F);
+  plugin_->processData(4, domain_address);
+  plugin_->update_wind_down_complete();
+
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0007) << "expected Disable Operation";
+  EXPECT_FALSE(plugin_->wind_down_complete());
+}
+
+TEST_F(EcCiA402DriveTest, WindDownWaitsOutTheFaultReaction)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_FAULT_REACTION_ACTIVE;
+
+  plugin_->start_wind_down(1.0);
+
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x000F);
+  plugin_->processData(4, domain_address);
+
+  // The drive is still decelerating under power, so releasing the master now would stop the frames
+  // on a moving axis.
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  plugin_->update_wind_down_complete();
+  EXPECT_FALSE(plugin_->wind_down_complete());
+
+  // The reaction ends in Fault on the drive's own account, and there the power stage is off.
+  plugin_->state_ = STATE_FAULT;
+  plugin_->processData(4, domain_address);
+
+  // Still no fault reset: the standing fault has to survive into the next start-up.
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  plugin_->update_wind_down_complete();
+  EXPECT_TRUE(plugin_->wind_down_complete());
+}
+
+TEST_F(EcCiA402DriveTest, WindDownJudgesCompletionOnTheStateReadThisCycle)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_SWITCH_ON;
+
+  plugin_->start_wind_down(1.0);
+
+  // The control word is chosen from last cycle's state, which had the drive function disabled.
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x0007);
+  plugin_->processData(4, domain_address);
+  ASSERT_EQ(EC_READ_U16(domain_address), 0x0000);
+
+  // The status word read later in the same cycle shows the drive has faulted since, and the fault
+  // reaction is still decelerating under power.
+  plugin_->state_ = STATE_FAULT_REACTION_ACTIVE;
+  plugin_->update_wind_down_complete();
+
+  EXPECT_FALSE(plugin_->wind_down_complete());
+}
+
+TEST_F(EcCiA402DriveTest, WindDownDoesNotCompleteInAnUndefinedState)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_UNDEFINED;
+
+  plugin_->start_wind_down(1.0);
+
+  uint8_t domain_address[4];
+  EC_WRITE_U16(domain_address, 0x000F);
+  plugin_->processData(4, domain_address);
+
+  // Disable Voltage is still the right command, but a status word that decodes to no CiA-402 state
+  // says nothing about the power stage, so the frames keep going until a known state is read.
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
+  plugin_->update_wind_down_complete();
+  EXPECT_FALSE(plugin_->wind_down_complete());
+
+  plugin_->state_ = STATE_SWITCH_ON_DISABLED;
+  plugin_->processData(4, domain_address);
+  plugin_->update_wind_down_complete();
+  EXPECT_TRUE(plugin_->wind_down_complete());
+}
+
+TEST_F(EcCiA402DriveTest, ResetWindDownRestoresCommandChannelsForReactivation)
+{
+  std::unordered_map<std::string, std::string> slave_parameters;
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0, 42};
+  slave_parameters["command_interface/effort"] = "1";
+  plugin_->parameters_ = slave_parameters;
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_OPERATION_ENABLED;
+  plugin_->mode_of_operation_display_ = 10;
+
+  uint8_t torque_address[2];
+  plugin_->processData(2, torque_address);
+  ASSERT_EQ(EC_READ_S16(torque_address), 42);
+
+  plugin_->start_wind_down(1.0);
+  plugin_->processData(2, torque_address);
+
+  // While the wind-down runs the commanded torque is replaced by the configured default.
+  ASSERT_EQ(EC_READ_S16(torque_address), -5);
+
+  plugin_->reset_wind_down();
+
+  // A deactivate -> activate cycle reuses this instance, so the override the wind-down forced onto
+  // every command channel has to come back off: otherwise the drive spends the next run pinned to
+  // its defaults.
+  // reset_wind_down() forgets the state, and processData() on the torque channel does not decode
+  // the status word, so the drive is put back in Operation Enabled by hand.
+  plugin_->state_ = STATE_OPERATION_ENABLED;
+  plugin_->processData(2, torque_address);
+  EXPECT_EQ(EC_READ_S16(torque_address), 42);
+
+  // And the control word has to follow the automatic transitions again rather than stay pinned to
+  // a wind-down command, or the drive can never be taken back up to Operation Enabled.
+  plugin_->state_ = STATE_SWITCH_ON_DISABLED;
+  uint8_t control_word_address[4];
+  EC_WRITE_U16(control_word_address, 0x0000);
+  plugin_->processData(4, control_word_address);
+
+  EXPECT_EQ(EC_READ_U16(control_word_address), 0x0006) << "expected Shutdown, not a wind-down word";
+}
+
+TEST_F(EcCiA402DriveTest, ResetWindDownLeavesTheWindDownAbleToRunAgain)
+{
+  std::vector<double> state_interface = {0.0, 0.0};
+  std::vector<double> command_interface = {0.0, 0.0};
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->setup_interface_mapping();
+  plugin_->is_operational_ = true;
+  plugin_->state_ = STATE_OPERATION_ENABLED;
+
+  uint8_t domain_address[4];
+  plugin_->start_wind_down(1.0);
+  EC_WRITE_U16(domain_address, 0x000F);
+  plugin_->processData(4, domain_address);
+  ASSERT_EQ(EC_READ_U16(domain_address), 0x0007);
+
+  plugin_->reset_wind_down();
+
+  // Idle again, so the next shutdown's loop is not told the wind-down is already finished.
+  EXPECT_TRUE(plugin_->wind_down_complete());
+  EXPECT_EQ(plugin_->quick_stop_hold_until_, std::chrono::steady_clock::time_point{});
+
+  // The next activation reads the drive back up to Operation Enabled before it is wound down again.
+  plugin_->state_ = STATE_OPERATION_ENABLED;
+  plugin_->start_wind_down(1.0);
+  EXPECT_FALSE(plugin_->wind_down_complete());
+
+  EC_WRITE_U16(domain_address, 0x000F);
+  plugin_->processData(4, domain_address);
+
+  EXPECT_EQ(EC_READ_U16(domain_address), 0x0007);
+}
+
+// With auto_fault_reset off, a fault the drive came up in is cleared once, and a fault raised once
+// the drive has been in Operation Enabled latches. setupSlave() only runs in on_init, so the
+// one-shot has to be re-armed by reset_wind_down(), the hook the driver calls at the start of every
+// activation. Without that, a drive coming back up in Fault after a hardware component cycle would
+// stay there.
+TEST_F(EcCiA402DriveTest, StartupFaultResetIsReArmedOnEveryActivation)
+{
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  ASSERT_FALSE(plugin_->auto_fault_reset_);
+  ASSERT_TRUE(plugin_->reset_fault_on_startup_);
+
+  constexpr uint16_t enable_operation = 0x000F;
+  constexpr uint16_t fault_reset_bit = 0x0080;
+
+  // Came up in Fault: cleared.
+  EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, fault_reset_bit);
+
+  // Reached Operation Enabled: from here a fault is this session's, and latches.
+  plugin_->status_word_ = 0x1237;
+  plugin_->updateState();
+  ASSERT_TRUE(plugin_->startup_fault_window_closed_);
+  EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, 0);
+
+  // The next activation, with no wind-down having run, is a fresh start again.
+  plugin_->reset_wind_down();
+  EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, fault_reset_bit);
+}
+
+TEST_F(EcCiA402DriveTest, FaultStandingAcrossReactivationIsLatchedAfresh)
+{
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+
+  // The first session faults, and the drive is deactivated still in Fault.
+  plugin_->status_word_ = 0x0008;
+  plugin_->error_code_ = 0x2310;
+  plugin_->updateState();
+  ASSERT_EQ(plugin_->state_, STATE_FAULT);
+  ASSERT_EQ(plugin_->last_fault_error_code_, 0x2310);
+
+  plugin_->reset_wind_down();
+  EXPECT_EQ(plugin_->state_, STATE_START);
+
+  // The next activation finds the drive in Fault again, now for a different reason. Without the
+  // reset the fault would look like the old one still standing, and its code would never be
+  // latched.
+  plugin_->status_word_ = 0x0008;
+  plugin_->error_code_ = 0x8130;
+  plugin_->updateState();
+
+  EXPECT_EQ(plugin_->state_, STATE_FAULT);
+  EXPECT_EQ(plugin_->last_fault_error_code_, 0x8130);
+  EXPECT_EQ(plugin_->last_fault_status_word_, 0x0008);
+}
+
+TEST_F(EcCiA402DriveTest, StartupFaultResetLeavesAFaultRaisedDuringBringUp)
+{
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  ASSERT_FALSE(plugin_->auto_fault_reset_);
+  ASSERT_TRUE(plugin_->reset_fault_on_startup_);
+
+  constexpr uint16_t enable_operation = 0x000F;
+  constexpr uint16_t fault_reset_bit = 0x0080;
+
+  // Before OP the status word reads zero: Not Ready to Switch On keeps the startup window open.
+  plugin_->status_word_ = 0x0000;
+  plugin_->updateState();
+  ASSERT_FALSE(plugin_->startup_fault_window_closed_);
+
+  // The drive comes up cleanly to Switch On Disabled, then faults on its way up to Operation
+  // Enabled. That fault is this session's, so without auto_fault_reset it is not cleared.
+  plugin_->status_word_ = 0x0040;
+  plugin_->updateState();
+  ASSERT_TRUE(plugin_->startup_fault_window_closed_);
+  EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, 0);
+}
+
+TEST_F(EcCiA402DriveTest, ResetWindDownDiscardsAnUnconsumedFaultResetRequest)
+{
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->auto_fault_reset_ = false;
+  plugin_->reset_fault_on_startup_ = false;
+
+  constexpr uint16_t enable_operation = 0x000F;
+  constexpr uint16_t fault_reset_bit = 0x0080;
+
+  // The last session requested a fault reset while the drive was not in Fault, so nothing used it.
+  plugin_->fault_reset_ = true;
+  plugin_->last_fault_reset_command_ = true;
+
+  plugin_->reset_wind_down();
+
+  // The next session's fault waits for a request of its own.
+  EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, 0);
+}
+
+TEST_F(EcCiA402DriveTest, FaultLatchTakesTheNewCodeWhenItArrivesAfterTheEdge)
+{
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+
+  // The fault edge is seen while 0x603F still holds the previous fault's code.
+  plugin_->status_word_ = 0x0008;
+  plugin_->error_code_ = 0x2310;
+  plugin_->updateState();
+  ASSERT_EQ(plugin_->state_, STATE_FAULT);
+  ASSERT_EQ(plugin_->last_fault_error_code_, 0x2310);
+
+  // The drive publishes this fault's own code a cycle later, with the fault still standing.
+  plugin_->error_code_ = 0x8130;
+  plugin_->updateState();
+
+  EXPECT_EQ(plugin_->last_fault_error_code_, 0x8130);
 }
