@@ -16,6 +16,7 @@
 
 #include "ethercat_generic_plugins/generic_ec_cia402_drive.hpp"
 
+#include <cstdint>
 #include <numeric>
 #include <algorithm>
 #include <array>
@@ -118,6 +119,8 @@ EcCiA402Drive::~EcCiA402Drive()
 }
 
 bool EcCiA402Drive::initialized() {return initialized_;}
+
+uint16_t EcCiA402Drive::last_fault_error_code() const noexcept {return last_fault_error_code_;}
 
 void EcCiA402Drive::updateState()
 {

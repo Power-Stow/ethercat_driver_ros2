@@ -81,7 +81,7 @@ public:
   /** The error code the drive reported for the fault it is in, or the last one it was in.
    *  Survives the reset that clears 0x603F on the drive itself, so a fault that was acknowledged
    *  automatically still leaves something to read. Zero until the drive has faulted once. */
-  uint16_t last_fault_error_code() const noexcept {return last_fault_error_code_;}
+  uint16_t last_fault_error_code() const noexcept;
 
 protected:
   uint32_t counter_ = 0;
