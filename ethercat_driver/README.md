@@ -43,7 +43,7 @@ Set on the `<hardware>` element of the `ros2_control` system.
 `activation_thread_priority` — SCHED_FIFO priority applied to the activation/bring-up loop only; `<= 0` (default) keeps normal scheduling.
 `activation_cpu_core` — CPU core the activation/bring-up loop is pinned to; `< 0` (default) leaves the CPU affinity unchanged.
 `shutdown_wind_down_timeout_s` — budget in seconds for the shutdown wind-down loop (default `1.0`); `<= 0` skips the wind-down.
-`activation_timeout_s` — budget in seconds for the activation/bring-up loop (default `10.0`); `<= 0` waits indefinitely, and a positive value must exceed the loop's one second initial delay.
+`activation_timeout_s` — budget in seconds for the activation/bring-up loop (default `10.0`); `<= 0` waits indefinitely, and a positive value must exceed the loop's one second initial delay. Time the master spends re-scanning the bus does not count, up to 30 s of it.
 `require_startup_sdo` — refuse the activation when a startup config SDO download fails (default `false`, which brings the bus up anyway).
 
 ### Real-time activation loop
@@ -77,7 +77,15 @@ master:
 
 - `rclcpp::ok()` goes false, so Ctrl-C is honoured while the bus is still coming up.
 - `activation_timeout_s` elapses. The message names the modules still waited on, by configured name
-  and alias/position.
+  and alias/position, and how long the master spent re-scanning the bus.
+
+The master re-scans the bus on its own whenever the number of responding slaves changes,
+for example while power-cycled slaves come back one by one,
+and it configures no slave while it scans.
+That time is therefore added to the budget rather than counted against it,
+so a bus that is only slow to come up is not failed for it.
+The allowance is capped at 30 s, so a bus that never stops re-scanning still gives up.
+The loop logs each scan it observes.
 
 For reference, a healthy bring-up of a single DC drive takes about six seconds including the
 loop's initial one second delay, and that delay counts against the budget. A bus carrying more

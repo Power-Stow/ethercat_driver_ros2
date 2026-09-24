@@ -62,6 +62,15 @@ double monotonic_elapsed_s(const struct timespec & since)
 /// How long on_activate() waits after activating the master before its first update, in seconds.
 constexpr double ACTIVATION_INITIAL_DELAY_S = 1.0;
 
+/// How much of the time the master spends re-scanning the bus is kept out of activation_timeout_s,
+/// in seconds.
+/// The master configures no slave while it scans, so a slave on its way up waits out every scan,
+/// and a bus whose slaves are still booting can re-scan several times, each scan taking far longer
+/// than usual while a slave is slow to hand over its EEPROM.
+/// Beyond this much scanning the time counts again, so a bus that never stops re-scanning still
+/// gives up.
+constexpr double ACTIVATION_SCAN_ALLOWANCE_S = 30.0;
+
 /// The CLOCK_MONOTONIC instant @p seconds after @p base.
 struct timespec monotonic_after(const struct timespec & base, double seconds)
 {
@@ -1121,8 +1130,6 @@ CallbackReturn EthercatDriver::on_activate(
   // below, is cut short.
   const double initial_delay_s = ACTIVATION_INITIAL_DELAY_S;
   const struct timespec initial_delay_end = monotonic_after(activation_start, initial_delay_s);
-  const struct timespec activation_deadline =
-    monotonic_after(activation_start, activation_timeout_s_ > 0.0 ? activation_timeout_s_ : 0.0);
   while (rclcpp::ok() && monotonic_elapsed_s(activation_start) < initial_delay_s) {
     t.tv_nsec += interval_ns;
     while (t.tv_nsec >= 1000000000) {
@@ -1133,16 +1140,44 @@ CallbackReturn EthercatDriver::on_activate(
     clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
   }
 
-  const auto timed_out = [this, &activation_start]()
+  // Time the master spends re-scanning the bus is kept out of the budget, up to
+  // ACTIVATION_SCAN_ALLOWANCE_S of it. The master configures no slave while it scans, so counting
+  // that wait would fail a bus that is only slow to come up, while giving it no time at all would
+  // let a bus that never stops re-scanning wait forever.
+  double scan_s = 0.0;
+  double previous_elapsed_s = monotonic_elapsed_s(activation_start);
+  bool was_scanning = false;
+  const auto budget_s = [this, &scan_s]()
+    {
+      return activation_timeout_s_ + std::min(scan_s, ACTIVATION_SCAN_ALLOWANCE_S);
+    };
+  const auto timed_out = [this, &activation_start, &budget_s]()
     {
       return activation_timeout_s_ > 0.0 &&
-             monotonic_elapsed_s(activation_start) >= activation_timeout_s_;
+             monotonic_elapsed_s(activation_start) >= budget_s();
     };
 
   bool operational = false;
   while (true) {
     // wait until next shot
     clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL);
+
+    // The interval that just ended counts towards the scan allowance when the master is scanning.
+    // Sampled before the exits, so the budget they check already includes it.
+    const double elapsed_s = monotonic_elapsed_s(activation_start);
+    const bool scanning = master_->scanBusy();
+    if (scanning) {
+      scan_s += elapsed_s - previous_elapsed_s;
+      if (!was_scanning) {
+        RCLCPP_INFO(
+          rclcpp::get_logger("EthercatDriver"),
+          "EtherCAT master is re-scanning the bus and configures no slave until the scan ends. The "
+          "scan does not count against activation_timeout_s, up to %.0f s of scanning in total.",
+          ACTIVATION_SCAN_ALLOWANCE_S);
+      }
+    }
+    was_scanning = scanning;
+    previous_elapsed_s = elapsed_s;
 
     // Both exits are checked before the update, not only after it: an update started once shutdown
     // is requested or the budget is spent can only delay giving up, and its result would not be
@@ -1160,10 +1195,12 @@ CallbackReturn EthercatDriver::on_activate(
     if (timed_out()) {
       RCLCPP_ERROR(
         rclcpp::get_logger("EthercatDriver"),
-        "EtherCAT bus did not become operational within %.1f s. Still waiting on: %s. Check "
-        "'ethercat slaves': a slave stuck in INIT whose identity reads 0x00000000 has not released "
-        "its EEPROM to the master, which 'ethercat rescan' usually clears.",
+        "EtherCAT bus did not become operational within %.1f s, not counting %.1f s the master "
+        "spent re-scanning it. Still waiting on: %s. Check 'ethercat slaves': a slave stuck in "
+        "INIT whose identity reads 0x00000000 has not released its EEPROM to the master, which "
+        "'ethercat rescan' usually clears.",
         activation_timeout_s_,
+        std::min(scan_s, ACTIVATION_SCAN_ALLOWANCE_S),
         pendingModuleDescription().c_str());
       break;
     }
@@ -1191,7 +1228,7 @@ CallbackReturn EthercatDriver::on_activate(
       t.tv_sec++;
     }
     if (activation_timeout_s_ > 0.0) {
-      cap_wake_up(t, activation_deadline);
+      cap_wake_up(t, monotonic_after(activation_start, budget_s()));
     }
   }
 

@@ -188,7 +188,9 @@ protected:
   int activation_cpu_core_ = -1;
   /** Budget in seconds for the shutdown wind-down loop; <= 0 skips the wind-down entirely. */
   double shutdown_wind_down_timeout_s_ = 1.0;
-  /** Budget in seconds for the activation/bring-up loop; <= 0 waits indefinitely. */
+  /** Budget in seconds for the activation/bring-up loop; <= 0 waits indefinitely.
+    * Time the master spends re-scanning the bus is added on top, up to ACTIVATION_SCAN_ALLOWANCE_S.
+    */
   double activation_timeout_s_ = 10.0;
   /** Whether a failed startup config SDO download refuses the activation. Off by default, so
    *  the bus still comes up on whatever the drives already hold, as it always has. */

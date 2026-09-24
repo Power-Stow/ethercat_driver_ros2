@@ -134,6 +134,13 @@ public:
 
   inline bool isValid() const {return master_ != nullptr;}
 
+  /** \brief True while the master is scanning the bus.
+    * The master re-scans on its own whenever the number of responding slaves changes,
+    * and configures no slave while it does, so a slave about to come up stays down for the scan.
+    * False when the master is unavailable or cannot be queried.
+    */
+  bool scanBusy() const;
+
   /** \brief add a slave device to the master
     * alias and position can be found by running the following command
     * /opt/etherlab/bin$ sudo ./ethercat slaves

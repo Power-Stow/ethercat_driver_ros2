@@ -287,6 +287,18 @@ void EcMaster::registerPDOInDomain(
   domain_info->domain_regs.back() = empty;
 }
 
+bool EcMaster::scanBusy() const
+{
+  if (master_ == nullptr) {
+    return false;
+  }
+  ec_master_info_t info{};
+  if (ecrt_master(master_, &info) != 0) {
+    return false;
+  }
+  return info.scan_busy != 0;
+}
+
 bool EcMaster::activate()
 {
   if (master_ == nullptr) {
