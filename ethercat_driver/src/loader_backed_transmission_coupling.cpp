@@ -14,13 +14,6 @@
 
 #include "ethercat_driver/loader_backed_transmission_coupling.hpp"
 
-#include <hardware_interface/hardware_info.hpp>
-#include <hardware_interface/types/hardware_interface_type_values.hpp>
-#include <transmission_interface/differential_transmission_loader.hpp>
-#include <transmission_interface/exception.hpp>
-#include <transmission_interface/handle.hpp>
-#include <transmission_interface/simple_transmission_loader.hpp>
-
 #include <algorithm>
 #include <cstddef>
 #include <iterator>
@@ -29,13 +22,22 @@
 #include <string>
 #include <vector>
 
+#include <hardware_interface/hardware_info.hpp>
+#include <hardware_interface/types/hardware_interface_type_values.hpp>
+#include <transmission_interface/differential_transmission_loader.hpp>
+#include <transmission_interface/exception.hpp>
+#include <transmission_interface/handle.hpp>
+#include <transmission_interface/simple_transmission_loader.hpp>
+
 namespace ethercat_driver
 {
 
 namespace
 {
 
-std::size_t role_to_slot(const std::string & role, const std::string & prefix, std::size_t default_slot)
+std::size_t role_to_slot(
+  const std::string & role, const std::string & prefix,
+  std::size_t default_slot)
 {
   if (role.empty()) {
     return default_slot;
@@ -114,14 +116,19 @@ void LoaderBackedTransmissionCoupling::configure(
     joint_indices_[joint_slot] = joint_index;
     joint_state_interface_indices_[joint_slot] =
       InterfaceIndices{
-        find_interface_index(joints[joint_index].state_interfaces, hardware_interface::HW_IF_POSITION),
-        find_interface_index(joints[joint_index].state_interfaces, hardware_interface::HW_IF_VELOCITY),
-        find_interface_index(joints[joint_index].state_interfaces, hardware_interface::HW_IF_EFFORT)};
+      find_interface_index(joints[joint_index].state_interfaces,
+          hardware_interface::HW_IF_POSITION),
+      find_interface_index(joints[joint_index].state_interfaces,
+          hardware_interface::HW_IF_VELOCITY),
+      find_interface_index(joints[joint_index].state_interfaces, hardware_interface::HW_IF_EFFORT)};
     joint_command_interface_indices_[joint_slot] =
       InterfaceIndices{
-        find_interface_index(joints[joint_index].command_interfaces, hardware_interface::HW_IF_POSITION),
-        find_interface_index(joints[joint_index].command_interfaces, hardware_interface::HW_IF_VELOCITY),
-        find_interface_index(joints[joint_index].command_interfaces, hardware_interface::HW_IF_EFFORT)};
+      find_interface_index(joints[joint_index].command_interfaces,
+          hardware_interface::HW_IF_POSITION),
+      find_interface_index(joints[joint_index].command_interfaces,
+          hardware_interface::HW_IF_VELOCITY),
+      find_interface_index(joints[joint_index].command_interfaces,
+          hardware_interface::HW_IF_EFFORT)};
   }
 
   std::vector<std::size_t> actuator_storage_by_slot(
@@ -131,7 +138,9 @@ void LoaderBackedTransmissionCoupling::configure(
   actuator_state_interface_indices_.resize(transmission_info.actuators.size());
   actuator_command_interface_indices_.resize(transmission_info.actuators.size());
 
-  for (std::size_t actuator_order = 0; actuator_order < transmission_info.actuators.size(); ++actuator_order) {
+  for (std::size_t actuator_order = 0; actuator_order < transmission_info.actuators.size();
+    ++actuator_order)
+  {
     const auto & actuator = transmission_info.actuators[actuator_order];
     const auto actuator_slot = role_to_slot(actuator.role, "actuator", actuator_order);
     if (actuator_slot >= actuator_storage_by_slot.size()) {
@@ -150,14 +159,20 @@ void LoaderBackedTransmissionCoupling::configure(
     actuator_indices_[actuator_slot] = actuator_index;
     actuator_state_interface_indices_[actuator_slot] =
       InterfaceIndices{
-        find_interface_index(joints[actuator_index].state_interfaces, hardware_interface::HW_IF_POSITION),
-        find_interface_index(joints[actuator_index].state_interfaces, hardware_interface::HW_IF_VELOCITY),
-        find_interface_index(joints[actuator_index].state_interfaces, hardware_interface::HW_IF_EFFORT)};
+      find_interface_index(joints[actuator_index].state_interfaces,
+          hardware_interface::HW_IF_POSITION),
+      find_interface_index(joints[actuator_index].state_interfaces,
+          hardware_interface::HW_IF_VELOCITY),
+      find_interface_index(joints[actuator_index].state_interfaces,
+          hardware_interface::HW_IF_EFFORT)};
     actuator_command_interface_indices_[actuator_slot] =
       InterfaceIndices{
-        find_interface_index(joints[actuator_index].command_interfaces, hardware_interface::HW_IF_POSITION),
-        find_interface_index(joints[actuator_index].command_interfaces, hardware_interface::HW_IF_VELOCITY),
-        find_interface_index(joints[actuator_index].command_interfaces, hardware_interface::HW_IF_EFFORT)};
+      find_interface_index(joints[actuator_index].command_interfaces,
+          hardware_interface::HW_IF_POSITION),
+      find_interface_index(joints[actuator_index].command_interfaces,
+          hardware_interface::HW_IF_VELOCITY),
+      find_interface_index(joints[actuator_index].command_interfaces,
+          hardware_interface::HW_IF_EFFORT)};
   }
 }
 
@@ -183,11 +198,13 @@ void LoaderBackedTransmissionCoupling::actuator_to_joint(
   std::vector<transmission_interface::JointHandle> joint_handles;
   std::vector<transmission_interface::ActuatorHandle> actuator_handles;
   for (std::size_t i = 0; i < joint_indices_.size(); ++i) {
-    append_joint_handles(joint_handles, joint_names_[i], joint_state_interface_indices_[i], joint_values[i]);
+    append_joint_handles(joint_handles, joint_names_[i], joint_state_interface_indices_[i],
+        joint_values[i]);
   }
   for (std::size_t i = 0; i < actuator_indices_.size(); ++i) {
     append_actuator_handles(
-      actuator_handles, actuator_names_[i], actuator_state_interface_indices_[i], actuator_values[i]);
+      actuator_handles, actuator_names_[i], actuator_state_interface_indices_[i],
+        actuator_values[i]);
   }
 
   try {
@@ -221,11 +238,13 @@ void LoaderBackedTransmissionCoupling::joint_to_actuator(
   std::vector<transmission_interface::JointHandle> joint_handles;
   std::vector<transmission_interface::ActuatorHandle> actuator_handles;
   for (std::size_t i = 0; i < joint_indices_.size(); ++i) {
-    append_joint_handles(joint_handles, joint_names_[i], joint_command_interface_indices_[i], joint_values[i]);
+    append_joint_handles(joint_handles, joint_names_[i], joint_command_interface_indices_[i],
+        joint_values[i]);
   }
   for (std::size_t i = 0; i < actuator_indices_.size(); ++i) {
     append_actuator_handles(
-      actuator_handles, actuator_names_[i], actuator_command_interface_indices_[i], actuator_values[i]);
+      actuator_handles, actuator_names_[i], actuator_command_interface_indices_[i],
+        actuator_values[i]);
   }
 
   try {
@@ -256,10 +275,11 @@ std::size_t LoaderBackedTransmissionCoupling::find_joint_index(
 {
   const auto joint_it = std::find_if(
     joints.begin(), joints.end(),
-    [&joint_name](const auto & joint_info) { return joint_info.name == joint_name; });
+    [&joint_name](const auto & joint_info) {return joint_info.name == joint_name;});
   if (joint_it == joints.end()) {
     throw std::runtime_error(
-            "Transmission joint/actuator '" + joint_name + "' is not declared as a ros2_control joint.");
+            "Transmission joint/actuator '" + joint_name +
+        "' is not declared as a ros2_control joint.");
   }
   return static_cast<std::size_t>(std::distance(joints.begin(), joint_it));
 }
@@ -298,13 +318,16 @@ void LoaderBackedTransmissionCoupling::append_joint_handles(
   std::vector<double> & values)
 {
   if (indices.position >= 0) {
-    handles.emplace_back(name, hardware_interface::HW_IF_POSITION, &values[static_cast<std::size_t>(indices.position)]);
+    handles.emplace_back(name, hardware_interface::HW_IF_POSITION,
+        &values[static_cast<std::size_t>(indices.position)]);
   }
   if (indices.velocity >= 0) {
-    handles.emplace_back(name, hardware_interface::HW_IF_VELOCITY, &values[static_cast<std::size_t>(indices.velocity)]);
+    handles.emplace_back(name, hardware_interface::HW_IF_VELOCITY,
+        &values[static_cast<std::size_t>(indices.velocity)]);
   }
   if (indices.effort >= 0) {
-    handles.emplace_back(name, hardware_interface::HW_IF_EFFORT, &values[static_cast<std::size_t>(indices.effort)]);
+    handles.emplace_back(name, hardware_interface::HW_IF_EFFORT,
+        &values[static_cast<std::size_t>(indices.effort)]);
   }
 }
 
@@ -315,13 +338,16 @@ void LoaderBackedTransmissionCoupling::append_actuator_handles(
   std::vector<double> & values)
 {
   if (indices.position >= 0) {
-    handles.emplace_back(name, hardware_interface::HW_IF_POSITION, &values[static_cast<std::size_t>(indices.position)]);
+    handles.emplace_back(name, hardware_interface::HW_IF_POSITION,
+        &values[static_cast<std::size_t>(indices.position)]);
   }
   if (indices.velocity >= 0) {
-    handles.emplace_back(name, hardware_interface::HW_IF_VELOCITY, &values[static_cast<std::size_t>(indices.velocity)]);
+    handles.emplace_back(name, hardware_interface::HW_IF_VELOCITY,
+        &values[static_cast<std::size_t>(indices.velocity)]);
   }
   if (indices.effort >= 0) {
-    handles.emplace_back(name, hardware_interface::HW_IF_EFFORT, &values[static_cast<std::size_t>(indices.effort)]);
+    handles.emplace_back(name, hardware_interface::HW_IF_EFFORT,
+        &values[static_cast<std::size_t>(indices.effort)]);
   }
 }
 

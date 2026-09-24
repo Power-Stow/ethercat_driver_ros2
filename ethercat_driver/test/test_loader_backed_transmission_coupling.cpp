@@ -14,15 +14,15 @@
 
 #include <gtest/gtest.h>
 
-#include "ethercat_driver/loader_backed_transmission_coupling.hpp"
-
-#include <hardware_interface/hardware_info.hpp>
-#include <hardware_interface/types/hardware_interface_type_values.hpp>
-
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "ethercat_driver/loader_backed_transmission_coupling.hpp"
+
+#include <hardware_interface/hardware_info.hpp>
+#include <hardware_interface/types/hardware_interface_type_values.hpp>
 
 namespace
 {
@@ -51,7 +51,8 @@ hardware_interface::JointInfo make_transmission_joint(
   joint.name = name;
   joint.role = role;
   joint.state_interfaces = {hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY};
-  joint.command_interfaces = {hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY};
+  joint.command_interfaces = {hardware_interface::HW_IF_POSITION,
+    hardware_interface::HW_IF_VELOCITY};
   return joint;
 }
 
@@ -62,8 +63,10 @@ hardware_interface::ActuatorInfo make_transmission_actuator(
   hardware_interface::ActuatorInfo actuator;
   actuator.name = name;
   actuator.role = role;
-  actuator.state_interfaces = {hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY};
-  actuator.command_interfaces = {hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY};
+  actuator.state_interfaces = {hardware_interface::HW_IF_POSITION,
+    hardware_interface::HW_IF_VELOCITY};
+  actuator.command_interfaces = {hardware_interface::HW_IF_POSITION,
+    hardware_interface::HW_IF_VELOCITY};
   return actuator;
 }
 
@@ -95,7 +98,8 @@ TEST(LoaderBackedTransmissionCouplingTest, simple_transmission_maps_state_and_co
   EXPECT_DOUBLE_EQ(raw_joint_commands[0][1], 0.4);
 }
 
-TEST(LoaderBackedTransmissionCouplingTest, simple_transmission_preserves_auxiliary_actuator_commands)
+TEST(LoaderBackedTransmissionCouplingTest,
+  simple_transmission_preserves_auxiliary_actuator_commands)
 {
   ethercat_driver::LoaderBackedTransmissionCoupling coupling;
   hardware_interface::TransmissionInfo transmission;
@@ -157,8 +161,10 @@ TEST(LoaderBackedTransmissionCouplingTest, differential_transmission_maps_state_
   EXPECT_DOUBLE_EQ(hw_joint_states[2][1], 1.0);
   EXPECT_DOUBLE_EQ(hw_joint_states[3][1], 1.0);
 
-  std::vector<std::vector<double>> hw_joint_commands{{0.0, 0.0}, {0.0, 0.0}, {3.0, 1.0}, {1.0, 1.0}};
-  std::vector<std::vector<double>> raw_joint_commands{{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}};
+  std::vector<std::vector<double>> hw_joint_commands{{0.0, 0.0}, {0.0, 0.0}, {3.0, 1.0},
+    {1.0, 1.0}};
+  std::vector<std::vector<double>> raw_joint_commands{{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0},
+    {0.0, 0.0}};
   coupling.joint_to_actuator(hw_joint_commands, raw_joint_commands);
 
   EXPECT_DOUBLE_EQ(raw_joint_commands[0][0], 4.0);
@@ -167,7 +173,8 @@ TEST(LoaderBackedTransmissionCouplingTest, differential_transmission_maps_state_
   EXPECT_DOUBLE_EQ(raw_joint_commands[1][1], 0.0);
 }
 
-TEST(LoaderBackedTransmissionCouplingTest, differential_transmission_uses_role_slots_not_declaration_order)
+TEST(LoaderBackedTransmissionCouplingTest,
+  differential_transmission_uses_role_slots_not_declaration_order)
 {
   ethercat_driver::LoaderBackedTransmissionCoupling coupling;
   hardware_interface::TransmissionInfo transmission;
@@ -197,8 +204,10 @@ TEST(LoaderBackedTransmissionCouplingTest, differential_transmission_uses_role_s
   EXPECT_DOUBLE_EQ(hw_joint_states[2][1], 1.0);
   EXPECT_DOUBLE_EQ(hw_joint_states[3][1], 1.0);
 
-  std::vector<std::vector<double>> hw_joint_commands{{0.0, 0.0}, {0.0, 0.0}, {3.0, 1.0}, {1.0, 1.0}};
-  std::vector<std::vector<double>> raw_joint_commands{{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}};
+  std::vector<std::vector<double>> hw_joint_commands{{0.0, 0.0}, {0.0, 0.0}, {3.0, 1.0},
+    {1.0, 1.0}};
+  std::vector<std::vector<double>> raw_joint_commands{{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0},
+    {0.0, 0.0}};
   coupling.joint_to_actuator(hw_joint_commands, raw_joint_commands);
 
   EXPECT_DOUBLE_EQ(raw_joint_commands[0][0], 4.0);

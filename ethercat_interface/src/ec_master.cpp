@@ -13,9 +13,7 @@
 // limitations under the License.
 
 #include "ethercat_interface/ec_master.hpp"
-#include "ethercat_interface/ec_slave.hpp"
 
-#include <string>
 #include <unistd.h>
 #include <sys/resource.h>
 #include <pthread.h>
@@ -24,10 +22,14 @@
 #include <time.h>
 #include <sys/mman.h>
 #include <string.h>
+
+#include <string>
 #include <iostream>
 #include <sstream>
 #include <bitset>
 #include <cstring>
+
+#include "ethercat_interface/ec_slave.hpp"
 
 namespace ethercat_interface
 {
@@ -575,13 +577,13 @@ void EcMaster::checkMasterState()
   if (ms.al_states != master_state_.al_states) {
     std::string states;
     const auto add_state = [&states](const bool condition, const std::string & state_name) {
-      if (condition) {
-        if (!states.empty()) {
-          states += ", ";
+        if (condition) {
+          if (!states.empty()) {
+            states += ", ";
+          }
+          states += state_name;
         }
-        states += state_name;
-      }
-    };
+      };
 
     add_state(ms.al_states & 0x01, "INIT");
     add_state(ms.al_states & 0x02, "PRE-OP");
@@ -589,9 +591,10 @@ void EcMaster::checkMasterState()
     add_state(ms.al_states & 0x08, "OPERATIONAL");
 
     if (ms.al_states & 0xF0 || states.empty()) {
-        RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Unknown al_states: 0x%02X.", ms.al_states);
+      RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Unknown al_states: 0x%02X.", ms.al_states);
     } else {
-        RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Master detected slave states: %s", states.c_str());
+      RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Master detected slave states: %s",
+          states.c_str());
     }
   }
   if (ms.link_up != master_state_.link_up) {
@@ -610,26 +613,32 @@ void EcMaster::checkSlaveStates()
     if (s.al_state != slave.config_state.al_state) {
       switch (s.al_state) {
         case 1:
-            RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Slave (pos: %d) state: INIT", slave.slave->position_);
-        break;
+          RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Slave (pos: %d) state: INIT",
+            slave.slave->position_);
+          break;
         case 2:
-            RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Slave (pos: %d) state: PRE-OP", slave.slave->position_);
-        break;
+          RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Slave (pos: %d) state: PRE-OP",
+            slave.slave->position_);
+          break;
         case 4:
-            RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Slave (pos: %d) state: SAFE-OP", slave.slave->position_);
-        break;
+          RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Slave (pos: %d) state: SAFE-OP",
+            slave.slave->position_);
+          break;
         case 8:
-            RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Slave (pos: %d) state: OPERATIONAL", slave.slave->position_);
-        break;
+          RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Slave (pos: %d) state: OPERATIONAL",
+            slave.slave->position_);
+          break;
         default:
-            RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Slave (pos: %d) state: 0x%02X", slave.slave->position_, s.al_state);
-        break;
+          RCLCPP_WARN(rclcpp::get_logger("EthercatDriver"), "Slave (pos: %d) state: 0x%02X",
+            slave.slave->position_, s.al_state);
+          break;
       }
     }
     if (s.online != slave.config_state.online) {
       RCLCPP_WARN(
         rclcpp::get_logger(
-          "EthercatDriver"), "Slave (pos: %d) is %s.", slave.slave->position_, s.online ? "online" : "offline");
+          "EthercatDriver"), "Slave (pos: %d) is %s.", slave.slave->position_,
+          s.online ? "online" : "offline");
     }
     if (s.operational != slave.config_state.operational) {
       RCLCPP_WARN(
