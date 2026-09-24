@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "ethercat_driver/ethercat_driver.hpp"
-#include "ethercat_driver/loader_backed_transmission_coupling.hpp"
 
 #include <tinyxml2.h>
 
@@ -31,6 +30,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "ethercat_driver/loader_backed_transmission_coupling.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/rclcpp.hpp"
 
@@ -245,7 +245,9 @@ namespace ethercat_driver
 namespace
 {
 
-uint16_t module_position_from_parameters(const std::unordered_map<std::string, std::string> & module_parameters)
+uint16_t module_position_from_parameters(
+  const std::unordered_map<std::string,
+  std::string> & module_parameters)
 {
   return static_cast<uint16_t>(std::stoul(module_parameters.at("position")));
 }
@@ -796,7 +798,7 @@ CallbackReturn EthercatDriver::configNetwork()
   int32_t dc_sync0_shift_ns = 0;
   if (info_.hardware_parameters.find("dc_sync0_shift_ns") != info_.hardware_parameters.end()) {
     try {
-      const long parsed = std::stol(info_.hardware_parameters["dc_sync0_shift_ns"]);
+      const int64_t parsed = std::stoll(info_.hardware_parameters["dc_sync0_shift_ns"]);
       if (parsed < std::numeric_limits<int32_t>::min() ||
         parsed > std::numeric_limits<int32_t>::max())
       {
@@ -938,7 +940,8 @@ CallbackReturn EthercatDriver::on_activate(
   // DC sync-wait window instead of stalling for the full timeout. Scheduling is restored on exit.
   // Constructed priority-first so destruction restores the affinity before the scheduling policy.
   const std::unique_ptr<ScopedFifoPriority> activation_priority =
-    activation_thread_priority_ > 0 ? std::make_unique<ScopedFifoPriority>(activation_thread_priority_) : nullptr;
+    activation_thread_priority_ >
+    0 ? std::make_unique<ScopedFifoPriority>(activation_thread_priority_) : nullptr;
   const std::unique_ptr<ScopedCpuAffinity> activation_affinity =
     activation_cpu_core_ >= 0 ? std::make_unique<ScopedCpuAffinity>(activation_cpu_core_) : nullptr;
 

@@ -82,7 +82,10 @@ extern const SingleWriteFunctionType ec_pdo_single_write_functions[];
 
 struct InterfaceData
 {
-  /** @brief When override_command is true, the default_value will always be used when writing instead of the command interface value */
+  /**
+   * @brief When override_command is true, the default_value will always be used when writing,
+   * instead of the command interface value
+   */
   bool override_command = false;
   uint8_t mask = 255;
   double default_value = std::numeric_limits<double>::quiet_NaN();
