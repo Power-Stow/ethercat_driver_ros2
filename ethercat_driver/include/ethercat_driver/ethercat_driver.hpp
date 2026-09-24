@@ -209,7 +209,8 @@ protected:
   /** Empty interfaces */
   std::vector<double> empty_interface_;
 
-  /// Release one command interface, named "<joint>/<interface>", to a value that commands no motion.
+  /// Release one command interface, named "<joint>/<interface>", to a value that commands no
+  /// motion.
   void release_joint_command(const std::string & interface_name);
 
   /// The joint's last read position state, or NaN when it has no position state interface.

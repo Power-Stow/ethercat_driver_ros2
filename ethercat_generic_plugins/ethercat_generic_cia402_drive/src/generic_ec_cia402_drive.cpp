@@ -57,9 +57,9 @@ constexpr uint16_t CONTROL_WORD_QUICK_STOP = 0b00001011;
 /// energised state.
 constexpr uint16_t CONTROL_WORD_DISABLE_VOLTAGE = 0b00000000;
 
-/// True for the CiA-402 states in which the drive function is disabled, so that the frames may stop.
-/// Quick Stop Active and Fault Reaction Active are still decelerating under power, and an undefined
-/// or not-yet-read state says nothing about the power stage, so none of those qualify.
+/// True for the CiA-402 states in which the drive function is disabled, so that the frames may
+/// stop. Quick Stop Active and Fault Reaction Active are still decelerating under power, and an
+/// undefined or not-yet-read state says nothing about the power stage, so none of those qualify.
 constexpr bool is_wind_down_safe_state(DeviceState state) noexcept
 {
   switch (state) {
@@ -136,10 +136,11 @@ void EcCiA402Drive::updateState()
 
   latch_fault_error_code();
   // The startup window closes the first time the drive is seen in a non-fault state past Not Ready
-  // to Switch On. Until the slave is in OP its status word reads zero, which decodes to Not Ready, so
-  // a fault the drive comes up in is still inside the window; one raised after it has reached Switch
-  // On Disabled or beyond is this session's, and latches until a deliberate reset.
-  if (state_ != STATE_START && state_ != STATE_NOT_READY_TO_SWITCH_ON && state_ != STATE_UNDEFINED &&
+  // to Switch On. Until the slave is in OP its status word reads zero, which decodes to Not Ready,
+  // so a fault the drive comes up in is still inside the window; one raised after it has reached
+  // Switch On Disabled or beyond is this session's, and latches until a deliberate reset.
+  if (state_ != STATE_START && state_ != STATE_NOT_READY_TO_SWITCH_ON &&
+    state_ != STATE_UNDEFINED &&
     state_ != STATE_FAULT && state_ != STATE_FAULT_REACTION_ACTIVE)
   {
     startup_fault_window_closed_ = true;
@@ -170,15 +171,16 @@ void EcCiA402Drive::updateState()
 void EcCiA402Drive::latch_fault_error_code()
 {
   // Deliberately kept across the reset that follows. A drive clears 0x603F within a cycle or two of
-  // being acknowledged, and with auto_fault_reset the acknowledgement goes out on the very next cycle,
-  // so reading the live object afterwards says only that the drive is no longer complaining. Whoever
-  // has to explain the trip needs what it was complaining about.
+  // being acknowledged, and with auto_fault_reset the acknowledgement goes out on the very next
+  // cycle, so reading the live object afterwards says only that the drive is no longer complaining.
+  // Whoever has to explain the trip needs what it was complaining about.
   const bool in_fault = state_ == STATE_FAULT || state_ == STATE_FAULT_REACTION_ACTIVE;
   if (!in_fault) {
     return;
   }
 
-  const bool was_in_fault = last_state_ == STATE_FAULT || last_state_ == STATE_FAULT_REACTION_ACTIVE;
+  const bool was_in_fault = last_state_ == STATE_FAULT ||
+    last_state_ == STATE_FAULT_REACTION_ACTIVE;
   if (!was_in_fault) {
     // A new fault replaces the previous record rather than being discarded behind it.
     last_fault_error_code_ = error_code_;
@@ -198,8 +200,8 @@ void EcCiA402Drive::latch_fault_error_code()
     RCLCPP_ERROR(
       rclcpp::get_logger("EthercatDriver"),
       "EcCiA402Drive: drive faulted with error code 0x%04x, status word 0x%04x [slave pos: %u]. "
-      "The code is latched on the last_error_code state interface; the drive's own 0x603F is cleared "
-      "by the reset that follows.",
+      "The code is latched on the last_error_code state interface; "
+      "the drive's own 0x603F is cleared by the reset that follows.",
       last_fault_error_code_,
       last_fault_status_word_,
       position_);
@@ -396,12 +398,12 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
     // The wind-down holds the last read position, so a setpoint left behind by a controller that
     // has already stopped cannot be replayed into a drive that is being brought down.
     //
-    // A drive that is not in Operation Enabled is held the same way, and for the same reason one step
-    // earlier: while it is in Fault, or walking back up through Switch On Disabled after a reset, the
-    // axis is free and moves. Whatever setpoint the command interface holds was written before that and
-    // no longer describes where the axis is, so commanding it at the moment the power stage comes back
-    // steps the axis to it. Holding the last read position throughout means the drive re-enables onto
-    // the position it is actually at.
+    // A drive that is not in Operation Enabled is held the same way, and for the same reason one
+    // step earlier: while it is in Fault, or walking back up through Switch On Disabled after a
+    // reset, the axis is free and moves. Whatever setpoint the command interface holds was written
+    // before that and no longer describes where the axis is, so commanding it at the moment the
+    // power stage comes back steps the axis to it. Holding the last read position throughout means
+    // the drive re-enables onto the position it is actually at.
     const bool follow_position_command = !wind_down_requested_ &&
       state_ == STATE_OPERATION_ENABLED &&
       mode_of_operation_display_ == ModeOfOperation::MODE_CYCLIC_SYNC_POSITION;
@@ -442,16 +444,17 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
   // The velocity and torque setpoints fall back to their configured defaults, zero, while the
   // wind-down runs and whenever the drive is not in Operation Enabled.
   //
-  // Assigned every cycle rather than only set, because override_command lives on the channel and outlives
-  // the condition that raised it. Setting it on the way up, which every bring-up does before the drive
-  // first reaches Operation Enabled, and never clearing it pins the channel to its default for the rest
-  // of the session: the drive then ignores its velocity and torque commands for good.
+  // Assigned every cycle rather than only set, because override_command lives on the channel and
+  // outlives the condition that raised it. Setting it on the way up, which every bring-up does
+  // before the drive first reaches Operation Enabled, and never clearing it pins the channel to its
+  // default for the rest of the session: the drive then ignores its velocity and torque commands
+  // for good.
   //
   // Only the motion setpoints are suppressed. The mode of operation in particular has to reach the
   // drive before it is enabled, or the automatic transitions enable it in the old mode and the
-  // requested one lands later as an online mode switch; the same goes for any other non-motion RPDO.
-  // The control word is driven by the state machine and the wind-down themselves, just above, and the
-  // target position assigns its own override from `follow_position_command`.
+  // requested one lands later as an online mode switch; the same goes for any other non-motion
+  // RPDO. The control word is driven by the state machine and the wind-down themselves, just above,
+  // and the target position assigns its own override from `follow_position_command`.
   if (channel.index == CiA402D_RPDO_VELOCITY || channel.index == CiA402D_RPDO_EFFORT) {
     channel.override_command = wind_down_requested_ || state_ != STATE_OPERATION_ENABLED;
   }
@@ -521,10 +524,9 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
     status_word_ = channel.last_value;
   }
 
-  // Special case: Error Code. Read every cycle so the latch below has the live value to take when the
-  // drive raises the fault bit.
-  // The channel reads 0x603F as a uint16 and stores it in last_value as a double, which represents
-  // every uint16 exactly, so the cast back loses nothing.
+  // Special case: Error Code. Read every cycle so the latch below has the live value to take when
+  // the drive raises the fault bit. The channel reads 0x603F as a uint16 and stores it in
+  // last_value as a double, which represents every uint16 exactly, so the cast back loses nothing.
   if (channel.index == CiA402D_TPDO_ERROR_CODE) {
     error_code_ = static_cast<uint16_t>(channel.last_value);
   }
@@ -633,7 +635,8 @@ bool EcCiA402Drive::setupSlave(
     } catch (const std::invalid_argument &) {
       RCLCPP_ERROR(
         rclcpp::get_logger("EthercatDriver"),
-        "EcCiA402Drive: failed to parse parameter 'state_interface/last_error_code' with value '%s'",
+        "EcCiA402Drive: failed to parse parameter 'state_interface/last_error_code' "
+        "with value '%s'",
         value.c_str());
     } catch (const std::out_of_range &) {
       RCLCPP_ERROR(
@@ -643,8 +646,8 @@ bool EcCiA402Drive::setupSlave(
     }
   }
 
-  // A drive that has not faulted yet reports zero rather than NaN, so a reader can tell "no fault on
-  // record" from "this interface is not mapped", which stays NaN because nothing writes it.
+  // A drive that has not faulted yet reports zero rather than NaN, so a reader can tell "no fault
+  // on record" from "this interface is not mapped", which stays NaN because nothing writes it.
   last_fault_error_code_ = 0;
   last_fault_status_word_ = 0;
   fault_error_code_logged_ = false;
@@ -757,8 +760,8 @@ uint16_t EcCiA402Drive::transition(DeviceState state, uint16_t control_word)
         if (startup_reset && !startup_fault_reset_logged_) {
           RCLCPP_WARN(
             rclcpp::get_logger("EthercatDriver"),
-            "EcCiA402Drive: the drive came up in Fault with error code 0x%04x; clearing it once on the "
-            "way to Operation Enabled [slave pos: %u]",
+            "EcCiA402Drive: the drive came up in Fault with error code 0x%04x; "
+            "clearing it once on the way to Operation Enabled [slave pos: %u]",
             last_fault_error_code_,
             position_);
           startup_fault_reset_logged_ = true;
@@ -800,8 +803,8 @@ void EcCiA402Drive::start_wind_down(double timeout_s)
   // quick stop option code takes them to Switch On Disabled finish well inside that and end the
   // wind-down early; the ones configured to hold position in Quick Stop Active never would, so the
   // remaining half is left for Disable Voltage to be commanded and take effect. Unused when the
-  // drive does not support Quick Stop, since that path never enters Quick Stop Active. A budget that
-  // is not a positive finite number gives no hold at all, rather than an undefined conversion.
+  // drive does not support Quick Stop, since that path never enters Quick Stop Active. A budget
+  // that is not a positive finite number gives no hold at all, rather than an undefined conversion.
   const double hold_s = std::isfinite(timeout_s) && timeout_s > 0.0 ? 0.5 * timeout_s : 0.0;
   quick_stop_hold_until_ = std::chrono::steady_clock::now() +
     std::chrono::duration_cast<std::chrono::steady_clock::duration>(
@@ -841,7 +844,8 @@ void EcCiA402Drive::reset_wind_down()
   // than compared against the one the last session ended on. A drive that was deactivated in Fault
   // and comes back up in Fault, perhaps with a different error code, is then a new fault edge, so
   // latch_fault_error_code() replaces the old record and logs it instead of keeping the stale one.
-  // Until that status word is read the control word is not chosen from a state that no longer holds.
+  // Until that status word is read the control word is not chosen from a state that no longer
+  // holds.
   state_ = STATE_START;
   last_state_ = STATE_START;
   last_status_word_ = -1;
@@ -855,7 +859,8 @@ void EcCiA402Drive::reset_wind_down()
   if (!pre_wind_down_override_command_.empty()) {
     for (size_t i = 0; i < pdo_channels_info_.size(); ++i) {
       auto * single_channel =
-        dynamic_cast<ethercat_interface::EcPdoSingleInterfaceChannelManager *>(pdo_channels_info_[i]);
+        dynamic_cast<ethercat_interface::EcPdoSingleInterfaceChannelManager *>(
+        pdo_channels_info_[i]);
       if (single_channel != nullptr) {
         single_channel->override_command = pre_wind_down_override_command_[i];
       }

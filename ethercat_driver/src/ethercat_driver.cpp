@@ -1116,9 +1116,9 @@ CallbackReturn EthercatDriver::on_activate(
 
   // Start after the initial delay, which on_init() guarantees is shorter than activation_timeout_s.
   // Slept one period at a time rather than in one go, so a shutdown request is honoured during the
-  // delay as well. Every wake-up is capped at the deadline it serves, so a control period longer than
-  // the remaining budget cannot overshoot it: the last step of the delay, and of the loop below, is
-  // cut short.
+  // delay as well. Every wake-up is capped at the deadline it serves, so a control period longer
+  // than the remaining budget cannot overshoot it: the last step of the delay, and of the loop
+  // below, is cut short.
   const double initial_delay_s = ACTIVATION_INITIAL_DELAY_S;
   const struct timespec initial_delay_end = monotonic_after(activation_start, initial_delay_s);
   const struct timespec activation_deadline =
@@ -1177,8 +1177,8 @@ CallbackReturn EthercatDriver::on_activate(
       isAllInit = isAllInit && module->initialized();
     }
     // Only accepted when the update also finished inside the budget: capping the requested wake-up
-    // does not cap the actual one, and a late wake-up or a slow update() must not turn into a success
-    // past it. A late result goes round once more and is reported as the timeout above.
+    // does not cap the actual one, and a late wake-up or a slow update() must not turn into a
+    // success past it. A late result goes round once more and is reported as the timeout above.
     if (isAllInit && !timed_out()) {
       operational = true;
       break;
@@ -1200,8 +1200,9 @@ CallbackReturn EthercatDriver::on_activate(
     // would otherwise lose their cyclic data while energised. The ones still pending report the
     // wind-down complete at once, so this costs nothing when no drive got that far. The thread is
     // still under the activation's real-time guards, so the wind-down reuses them rather than
-    // nesting its own: a nested guard saves the already-elevated state, and its restore checks throw
-    // from destructors while the other guard's throw is unwinding, which calls std::terminate().
+    // nesting its own: a nested guard saves the already-elevated state, and its restore checks
+    // throw from destructors while the other guard's throw is unwinding, which calls
+    // std::terminate().
     try {
       windDownSlaves(false);
     } catch (const std::exception & e) {
@@ -1275,8 +1276,8 @@ void EthercatDriver::windDownSlaves(bool elevate_scheduling)
   // The bring-up loop's real-time treatment applies here for the same reason: a scheduling gap
   // stops the cyclic frames for longer than a DC slave's sync watchdog allows, which is exactly the
   // synchronization error this loop exists to avoid. Constructed priority-first so destruction
-  // restores the affinity before the scheduling policy.
-  // Held by value so a throw from their destructors reaches the caller's try/catch; see on_activate().
+  // restores the affinity before the scheduling policy. Held by value so a throw from their
+  // destructors reaches the caller's try/catch; see on_activate().
   const ScopedFifoPriority wind_down_priority(elevate_scheduling ? activation_thread_priority_ : 0);
   const ScopedCpuAffinity wind_down_affinity(elevate_scheduling ? activation_cpu_core_ : -1);
 
@@ -1364,8 +1365,8 @@ hardware_interface::return_type EthercatDriver::perform_command_mode_switch(
   const std::vector<std::string> & /*start_interfaces*/,
   const std::vector<std::string> & stop_interfaces)
 {
-  // Starting interfaces are left alone: a controller that has just claimed one writes it before the next
-  // cycle reaches the bus, and preempting that would overwrite its first command.
+  // Starting interfaces are left alone: a controller that has just claimed one writes it before the
+  // next cycle reaches the bus, and preempting that would overwrite its first command.
   for (const auto & interface_name : stop_interfaces) {
     release_joint_command(interface_name);
   }
@@ -1393,10 +1394,11 @@ void EthercatDriver::release_joint_command(const std::string & interface_name)
       }
 
       if (name == hardware_interface::HW_IF_POSITION) {
-        // Held at the joint's last read position. A NaN is not "stay where you are" for every module:
-        // the channel managers write their configured default in place of it, which only the CiA-402
-        // plugin keeps at the last read position, so a generic channel defaulting to zero would be
-        // commanded to zero. Without a position reading to hold, the last command is left in place.
+        // Held at the joint's last read position. A NaN is not "stay where you are" for every
+        // module: the channel managers write their configured default in place of it, which only
+        // the CiA-402 plugin keeps at the last read position, so a generic channel defaulting to
+        // zero would be commanded to zero. Without a position reading to hold, the last command is
+        // left in place.
         const double held_position = joint_position_state(j);
         if (std::isnan(held_position)) {
           RCLCPP_WARN(
@@ -1412,8 +1414,8 @@ void EthercatDriver::release_joint_command(const std::string & interface_name)
       {
         hw_joint_commands_[j][i] = 0.0;
       } else {
-        // The control word, the mode of operation and the fault reset are not motion, and a drive that
-        // is between controllers should keep the mode and the state machine it already had.
+        // The control word, the mode of operation and the fault reset are not motion, and a drive
+        // that is between controllers should keep the mode and the state machine it already had.
         return;
       }
 

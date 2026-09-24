@@ -693,7 +693,8 @@ TEST_F(EcCiA402DriveTest, WindDownCompletesAfterOneCycleWhenNeverOperational)
   plugin_->processData(4, domain_address);
   plugin_->update_wind_down_complete();
 
-  // The drive is de-energised by the status word alone, so the wind-down does not hold up the caller.
+  // The drive is de-energised by the status word alone, so the wind-down does not hold up the
+  // caller.
   EXPECT_EQ(EC_READ_U16(domain_address), 0x0000);
   EXPECT_TRUE(plugin_->wind_down_complete());
 }
@@ -935,7 +936,8 @@ TEST_F(EcCiA402DriveTest, FaultStandingAcrossReactivationIsLatchedAfresh)
   EXPECT_EQ(plugin_->state_, STATE_START);
 
   // The next activation finds the drive in Fault again, now for a different reason. Without the
-  // reset the fault would look like the old one still standing, and its code would never be latched.
+  // reset the fault would look like the old one still standing, and its code would never be
+  // latched.
   plugin_->status_word_ = 0x0008;
   plugin_->error_code_ = 0x8130;
   plugin_->updateState();
