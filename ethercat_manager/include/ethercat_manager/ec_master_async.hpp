@@ -93,7 +93,7 @@ public:
     if (ioctl(fd_, EC_IOCTL_SLAVE_SDO_DOWNLOAD, data) < 0) {
       std::stringstream err;
       if (errno == EIO && data->abort_code) {
-        if (auto err_it = abort_code_map_.find(data->abort_code); err_it != abort_code_map_.end()) {
+        if (const auto err_it = abort_code_map_.find(data->abort_code); err_it != abort_code_map_.end()) {
           err << "SDO transfer aborted: " << err_it->second;
         } else {
           err << "SDO transfer aborted with unknown abort code: 0x" << std::hex << data->abort_code;
@@ -111,7 +111,7 @@ public:
     if (ioctl(fd_, EC_IOCTL_SLAVE_SDO_UPLOAD, data) < 0) {
       std::stringstream err;
       if (errno == EIO && data->abort_code) {
-        if (auto err_it = abort_code_map_.find(data->abort_code); err_it != abort_code_map_.end()) {
+        if (const auto err_it = abort_code_map_.find(data->abort_code); err_it != abort_code_map_.end()) {
           err << "SDO transfer aborted: " << err_it->second;
         } else {
           err << "SDO transfer aborted with unknown abort code: 0x" << std::hex << data->abort_code;

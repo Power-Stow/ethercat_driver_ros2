@@ -91,7 +91,7 @@ bool GenericEcSlave::resolve_sdo_factors(const ethercat_interface::EcSlave::SdoR
   bool all_resolved = true;
 
   for (auto * channel : pdo_channels_info_) {
-    if (channel == nullptr || !channel->factor_source.configured) {
+    if (!channel->factor_source.configured) {
       continue;
     }
     const auto & source = channel->factor_source;
@@ -105,9 +105,7 @@ bool GenericEcSlave::resolve_sdo_factors(const ethercat_interface::EcSlave::SdoR
       continue;
     }
 
-    // Only a single-interface channel parses a valid source, so the cast is safe; the factor itself
-    // lives on the channel's InterfaceData, which the base manager does not have.
-    auto * single = static_cast<ethercat_interface::EcPdoSingleInterfaceChannelManager *>(channel);
+    auto & interfaceData = channel->data();
 
     double raw_value = 0.0;
     if (!read_sdo(source.index, source.sub_index, source.data_type, &raw_value)) {
@@ -121,10 +119,10 @@ bool GenericEcSlave::resolve_sdo_factors(const ethercat_interface::EcSlave::SdoR
       } else {
         // Restored from the source rather than left in place: an earlier activation may have
         // overwritten the channel's factor with what it read then.
-        single->factor = source.literal_factor;
+        interfaceData.factor = source.literal_factor;
         std::cerr << "channel 0x" << std::hex << channel->index << std::dec <<
           ": could not read its factor from SDO 0x" << std::hex << source.index << std::dec <<
-          ", falling back on the configured factor " << single->factor << std::endl;
+          ", falling back on the configured factor " << interfaceData.factor << std::endl;
       }
       continue;
     }
@@ -138,7 +136,7 @@ bool GenericEcSlave::resolve_sdo_factors(const ethercat_interface::EcSlave::SdoR
       continue;
     }
 
-    single->factor = resolved;
+    interfaceData.factor = resolved;
     std::cout << "channel 0x" << std::hex << channel->index << std::dec <<
       ": factor " << resolved << " read from SDO 0x" << std::hex << source.index << std::dec <<
       " (raw " << raw_value << ")" << std::endl;
