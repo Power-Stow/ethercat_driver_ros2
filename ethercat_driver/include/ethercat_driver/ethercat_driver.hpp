@@ -253,7 +253,7 @@ protected:
   // --- Health diagnostics (opt-in via the "publish_diagnostics" hardware parameter) ---
   bool publish_diagnostics_ = false;
   double diagnostics_period_s_ = 1.0;
-  int32_t dc_time_diff_warn_ns_ = 10000; // 10 us
+  int32_t dc_time_diff_warn_ns_ = 10000;  // 10 us
   double dt_tolerated_overrun_ = 0.5;  // fraction of the expected period a cycle may overrun
 
   rclcpp::Node::SharedPtr diagnostics_node_;
@@ -271,7 +271,8 @@ protected:
   double timing_jitter_max_s_ = 0.0;  //< largest |period - expected period| (early or late)
   uint64_t timing_sample_count_ = 0;
   uint64_t timing_overrun_count_ = 0;
-  /** overrun count at the previous publication; accessed only by the diagnostics publisher thread */
+  /** overrun count at the previous publication,
+   *  accessed only by the diagnostics publisher thread */
   uint64_t timing_overrun_count_reported_ = 0;
   bool timing_last_valid_ = false;
   struct timespec timing_last_ts_ = {};

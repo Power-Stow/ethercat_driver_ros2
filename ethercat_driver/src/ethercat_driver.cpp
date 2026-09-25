@@ -124,7 +124,8 @@ void cap_wake_up(struct timespec & wake_up, const struct timespec & deadline)
   throw std::runtime_error(message);
 }
 
-/// RAII helper that runs a cleanup callback on scope exit only when the scope is left by an exception.
+/// RAII helper that runs a cleanup callback on scope exit,
+/// only when the scope is left by an exception.
 ///
 /// Normal returns are expected to perform their own cleanup (or none, on success),
 /// so the callback fires only if more exceptions are in flight than when the guard was constructed.
@@ -354,10 +355,10 @@ std::string al_state_to_string(uint8_t al_state)
     case 4: return "SAFEOP";
     case 8: return "OP";
     default: {
-      char buffer[16];
-      std::snprintf(buffer, sizeof(buffer), "0x%02X", al_state);
-      return std::string(buffer);
-    }
+        char buffer[16];
+        std::snprintf(buffer, sizeof(buffer), "0x%02X", al_state);
+        return std::string(buffer);
+      }
   }
 }
 
@@ -1233,7 +1234,8 @@ CallbackReturn EthercatDriver::on_activate(
   // The bring-up loop below drives master_->update(), which populates the snapshot; the publisher
   // reads it via getDiagnostics() (a separate lock), so it keeps publishing even while this
   // activation thread is busy in the loop.
-  // Started before the priority elevation below so the publisher thread does not inherit SCHED_FIFO.
+  // Started before the priority elevation below,
+  // so the publisher thread does not inherit SCHED_FIFO.
   startDiagnostics();
   // Stop and join the publisher if any later activation step throws (e.g. ScopedFifoPriority),
   // so it does not outlive a failed activation or leave a joinable thread behind.
@@ -1717,13 +1719,16 @@ void EthercatDriver::parseDiagnosticsParameters()
       // Bounded so the steady-clock conversion in startDiagnostics() neither truncates to zero
       // (which would publish in a busy loop) nor overflows; NaN fails the comparison as well.
       const auto diagnostics_period_in = std::stod(it->second);
-      if (diagnostics_period_in >= kMinDiagnosticsPeriodS && diagnostics_period_in <= kMaxDiagnosticsPeriodS) {
+      if (diagnostics_period_in >= kMinDiagnosticsPeriodS &&
+        diagnostics_period_in <= kMaxDiagnosticsPeriodS)
+      {
         diagnostics_period_s_ = diagnostics_period_in;
       } else {
         RCLCPP_WARN(
           rclcpp::get_logger("EthercatDriver"),
           "Invalid diagnostics_period_s (%f, must be in [%.3f, %.0f]); using %.2f s.",
-          diagnostics_period_in, kMinDiagnosticsPeriodS, kMaxDiagnosticsPeriodS, diagnostics_period_s_);
+          diagnostics_period_in, kMinDiagnosticsPeriodS, kMaxDiagnosticsPeriodS,
+          diagnostics_period_s_);
       }
     } catch (const std::exception & e) {
       RCLCPP_WARN(
@@ -1732,14 +1737,16 @@ void EthercatDriver::parseDiagnosticsParameters()
     }
   }
 
-  dc_time_diff_warn_ns_ = 10000; // 10 us
+  dc_time_diff_warn_ns_ = 10000;  // 10 us
   it = info_.hardware_parameters.find("dc_time_diff_warn_ns");
   if (it != info_.hardware_parameters.end()) {
     try {
       // Parse wide and range-check before narrowing, since a negative or wrapped threshold would
       // flag every DC sample as drifting.
-      const long long dc_time_diff_warn_in = std::stoll(it->second);
-      if (dc_time_diff_warn_in >= 0 && dc_time_diff_warn_in <= std::numeric_limits<int32_t>::max()) {
+      const long long dc_time_diff_warn_in = std::stoll(it->second);  // NOLINT(runtime/int)
+      if (dc_time_diff_warn_in >= 0 &&
+        dc_time_diff_warn_in <= std::numeric_limits<int32_t>::max())
+      {
         dc_time_diff_warn_ns_ = static_cast<int32_t>(dc_time_diff_warn_in);
       } else {
         RCLCPP_WARN(
@@ -1833,9 +1840,9 @@ void EthercatDriver::startDiagnostics()
   // Only touched by the publisher thread, which is not running yet.
   timing_overrun_count_reported_ = 0;
 
-  // Derive the node name and hardware ID from the hardware component name so multiple driver instances
-  // in one controller manager publish distinguishable statuses (the updater prefixes each status name
-  // with the node name).
+  // Derive the node name and hardware ID from the hardware component name,
+  // so multiple driver instances in one controller manager publish distinguishable statuses
+  // (the updater prefixes each status name with the node name).
   // Diagnostics are optional, so a failure to set them up is logged rather than failing activation.
   try {
     diagnostics_node_ =
@@ -1845,7 +1852,8 @@ void EthercatDriver::startDiagnostics()
     diagnostics_updater_->setHardwareID(info_.name);
 
     diagnostics_updater_->add("EtherCAT Master", this, &EthercatDriver::produceMasterDiagnostics);
-    diagnostics_updater_->add("EtherCAT RT Timing", this, &EthercatDriver::produceTimingDiagnostics);
+    diagnostics_updater_->add(
+      "EtherCAT RT Timing", this, &EthercatDriver::produceTimingDiagnostics);
 
     const auto module_name = [this](size_t index) -> const std::string * {
         if (index >= ec_module_parameters_.size()) {
@@ -2023,6 +2031,8 @@ void EthercatDriver::produceSlaveDiagnostics(
     stat.addf("status_word", "0x%04X", s.cia402.status_word);
   }
 
+  const bool dc_drift_high = s.dc_system_time_diff_valid &&
+    std::abs(s.dc_system_time_diff__ns) > dc_time_diff_warn_ns_;
   if (!s.online) {
     stat.summary(DiagnosticStatus::ERROR, "Slave offline");
   } else if (!s.operational) {
@@ -2032,9 +2042,7 @@ void EthercatDriver::produceSlaveDiagnostics(
   } else if (s.has_cia402 && s.cia402.in_fault) {
     stat.summary(
       DiagnosticStatus::ERROR, std::string("Drive fault: ") + s.cia402.device_state_label);
-  } else if (s.dc_system_time_diff_valid &&
-    std::abs(s.dc_system_time_diff__ns) > dc_time_diff_warn_ns_)
-  {
+  } else if (dc_drift_high) {
     stat.summary(DiagnosticStatus::WARN, "DC clock drift high");
   } else {
     stat.summary(DiagnosticStatus::OK, "Operational");
