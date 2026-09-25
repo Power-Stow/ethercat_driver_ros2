@@ -123,6 +123,15 @@ continuous.
 This helps avoid false ros2_control joint-limit violations at startup when the drive boots on the opposite branch of the
 configured `joint_offset`.
 
+## Health diagnostics
+
+The plugin implements `ethercat_interface::Cia402DiagnosticsProvider::cia402Diagnostics()`, exposing the decoded CiA 402 device state
+(state enum, a pointer to its static human-readable label, raw status word, and a fault flag).
+The snapshot is filled from the cyclic loop without heap allocation,
+and the label is turned into a string only by the diagnostics publisher thread.
+When `ethercat_driver` is launched with `publish_diagnostics:=true`, this appears per drive on `/diagnostics`, and a drive in
+`Fault` / `Fault Reaction Active` raises an `ERROR`. No configuration is required.
+
 ## CSV PDO Dump (debug)
 
 The plugin supports optional CSV dumping of all assigned PDO channels for each EtherCAT cycle.

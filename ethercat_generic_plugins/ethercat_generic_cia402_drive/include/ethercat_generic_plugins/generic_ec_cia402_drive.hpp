@@ -26,6 +26,7 @@
 #include <limits>
 
 #include "yaml-cpp/yaml.h"
+#include "ethercat_interface/ec_diagnostics.hpp"
 #include "ethercat_interface/ec_slave.hpp"
 #include "ethercat_interface/ec_pdo_single_interface_channel_manager.hpp"
 #include "ethercat_generic_plugins/generic_ec_slave.hpp"
@@ -34,7 +35,7 @@
 namespace ethercat_generic_plugins
 {
 
-class EcCiA402Drive : public GenericEcSlave
+class EcCiA402Drive : public GenericEcSlave, public ethercat_interface::Cia402DiagnosticsProvider
 {
 public:
   EcCiA402Drive();
@@ -44,6 +45,8 @@ public:
   bool initialized();
 
   virtual void processData(size_t entry_idx, uint8_t * domain_address);
+
+  ethercat_interface::Cia402Diagnostics cia402Diagnostics() const override;
 
   virtual bool setupSlave(
     std::unordered_map<std::string, std::string> slave_parameters,

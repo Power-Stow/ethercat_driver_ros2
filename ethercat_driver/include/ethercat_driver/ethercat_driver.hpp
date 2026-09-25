@@ -15,17 +15,24 @@
 #ifndef ETHERCAT_DRIVER__ETHERCAT_DRIVER_HPP_
 #define ETHERCAT_DRIVER__ETHERCAT_DRIVER_HPP_
 
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
+#include <ctime>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 #include <pluginlib/class_loader.hpp>
+#include "diagnostic_updater/diagnostic_updater.hpp"
 #include "hardware_interface/handle.hpp"
 #include "hardware_interface/hardware_info.hpp"
 #include "hardware_interface/system_interface.hpp"
 #include "hardware_interface/types/hardware_interface_return_values.hpp"
 #include "rclcpp/macros.hpp"
+#include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/node_interfaces/lifecycle_node_interface.hpp"
 #include "rclcpp_lifecycle/state.hpp"
 #include "ethercat_driver/visibility_control.h"
@@ -43,6 +50,11 @@ class EthercatDriver : public hardware_interface::SystemInterface
 {
 public:
   RCLCPP_SHARED_PTR_DEFINITIONS(EthercatDriver)
+
+  /** Stops and joins the diagnostics publisher as a final safety net,
+   *  in case the component is destroyed without passing through a deactivating lifecycle transition. */
+  ETHERCAT_DRIVER_PUBLIC
+  ~EthercatDriver() override;
 
   ETHERCAT_DRIVER_PUBLIC
   CallbackReturn on_init(
@@ -162,6 +174,26 @@ protected:
 
   void cleanupPluginsForShutdown();
 
+  /** Parse diagnostics-related hardware parameters (publish_diagnostics, thresholds). */
+  void parseDiagnosticsParameters();
+
+  /** Start the non-real-time diagnostics publishing node/thread (after activation). */
+  void startDiagnostics();
+
+  /** Stop and join the diagnostics publishing thread (before releasing the master). */
+  void stopDiagnostics();
+
+  /** Update the real-time cycle-timing statistics from the current read() invocation. */
+  void updateTimingStatistics();
+
+  /** diagnostic_updater task: master- and bus-level health. */
+  void produceMasterDiagnostics(diagnostic_updater::DiagnosticStatusWrapper & stat);
+  /** diagnostic_updater task: per-slave health for the slave at @p slave_index. */
+  void produceSlaveDiagnostics(
+    diagnostic_updater::DiagnosticStatusWrapper & stat, size_t slave_index);
+  /** diagnostic_updater task: real-time cyclic-loop timing health. */
+  void produceTimingDiagnostics(diagnostic_updater::DiagnosticStatusWrapper & stat);
+
 protected:
   std::vector<std::shared_ptr<ethercat_interface::EcSlave>> ec_modules_;
   std::vector<std::unordered_map<std::string, std::string>> ec_module_parameters_;
@@ -217,6 +249,33 @@ protected:
 
   /// The joint's last read position state, or NaN when it has no position state interface.
   double joint_position_state(size_t joint_index) const;
+
+  // --- Health diagnostics (opt-in via the "publish_diagnostics" hardware parameter) ---
+  bool publish_diagnostics_ = false;
+  double diagnostics_period_s_ = 1.0;
+  int32_t dc_time_diff_warn_ns_ = 10000;  // 10 us
+  double dt_tolerated_overrun_ = 0.5;  // fraction of the expected period a cycle may overrun
+
+  rclcpp::Node::SharedPtr diagnostics_node_;
+  std::unique_ptr<diagnostic_updater::Updater> diagnostics_updater_;
+  std::thread diagnostics_thread_;
+  std::atomic<bool> diagnostics_thread_running_{false};
+
+  /** guards the real-time cycle-timing statistics below */
+  std::mutex timing_mutex_;
+  bool timing_valid_ = false;
+  double timing_period_min_s_ = 0.0;
+  double timing_period_max_s_ = 0.0;
+  double timing_period_mean_s_ = 0.0;
+  double timing_period_sum_s_ = 0.0;
+  double timing_jitter_max_s_ = 0.0;  //< largest |period - expected period| (early or late)
+  uint64_t timing_sample_count_ = 0;
+  uint64_t timing_overrun_count_ = 0;
+  /** overrun count at the previous publication,
+   *  accessed only by the diagnostics publisher thread */
+  uint64_t timing_overrun_count_reported_ = 0;
+  bool timing_last_valid_ = false;
+  struct timespec timing_last_ts_ = {};
 };
 }  // namespace ethercat_driver
 

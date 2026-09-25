@@ -122,6 +122,19 @@ bool EcCiA402Drive::initialized() {return initialized_;}
 
 uint16_t EcCiA402Drive::last_fault_error_code() const noexcept {return last_fault_error_code_;}
 
+ethercat_interface::Cia402Diagnostics EcCiA402Drive::cia402Diagnostics() const
+{
+  ethercat_interface::Cia402Diagnostics diag;
+  diag.device_state = static_cast<int>(state_);
+  // Called from the cyclic loop: point at the static label table instead of copying a string.
+  const auto label_it = DEVICE_STATE_STR.find(state_);
+  diag.device_state_label =
+    (label_it != DEVICE_STATE_STR.end()) ? label_it->second.c_str() : "Undefined State";
+  diag.status_word = status_word_;
+  diag.in_fault = (state_ == STATE_FAULT || state_ == STATE_FAULT_REACTION_ACTIVE);
+  return diag;
+}
+
 void EcCiA402Drive::updateState()
 {
   if (status_word_ != last_status_word_) {

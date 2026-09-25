@@ -45,6 +45,55 @@ Set on the `<hardware>` element of the `ros2_control` system.
 `shutdown_wind_down_timeout_s` — budget in seconds for the shutdown wind-down loop (default `1.0`); `<= 0` skips the wind-down.
 `activation_timeout_s` — budget in seconds for the activation/bring-up loop (default `10.0`); `<= 0` waits indefinitely, and a positive value must exceed the loop's one second initial delay. Time the master spends re-scanning the bus does not count, up to 30 s of it.
 `require_startup_sdo` — refuse the activation when a startup config SDO download fails (default `false`, which brings the bus up anyway).
+`publish_diagnostics` — enable EtherCAT health diagnostics on `/diagnostics` (default `false`).
+`diagnostics_period_s` — diagnostics publish period in seconds (default `1.0`, valid range `[0.001, 3600]`; out-of-range values fall back to the default).
+`dc_time_diff_warn_ns` — per-slave DC system-time-difference magnitude above which a `WARN` is raised (default `10000`, valid range `[0, 2147483647]`; out-of-range values fall back to the default).
+`dt_tolerated_overrun` — fraction of the expected cycle period a cycle may exceed before it counts as an overrun, i.e. the threshold is `(1 + dt_tolerated_overrun) / control_frequency` (default `0.5`; must be finite and `>= 0`, otherwise the default is used).
+
+### Health diagnostics
+
+When `publish_diagnostics` is `true`, the driver publishes `diagnostic_msgs/DiagnosticArray` on
+`/diagnostics` from a dedicated non-real-time node (`ethercat_diagnostics_<hardware_name>`), leaving the cyclic
+`SCHED_FIFO` loop untouched apart from cheap state snapshotting. It integrates with
+`rqt_runtime_monitor` and `diagnostic_aggregator`.
+The node name and hardware ID are derived from the `ros2_control` hardware component name,
+with characters invalid in a node name replaced by `_` plus a stable hash suffix to keep sanitized names unique,
+so multiple driver instances in one controller manager publish distinguishable statuses,
+since `diagnostic_updater` prefixes each status name with the node name.
+
+Published `DiagnosticStatus` entries:
+
+- **EtherCAT Master** — `slaves_responding`, `link_up`, master `al_states`, domain working counter and `wc_state` (ZERO/INCOMPLETE/COMPLETE), and a cumulative incomplete-cycle count used as a lost-frame proxy.
+- **EtherCAT Slave: `<name>`** (one per slave) — AL state (INIT/PREOP/SAFEOP/OP), `online`/`operational`, AL status code (ESC register `0x0134`), DC system-time difference (`0x092C`) and DC propagation delay (`0x0928`) for DC-enabled slaves, and CiA 402 device state for drive slaves.
+  If several modules share a configured name, the module index is appended to keep task names unique.
+- **EtherCAT RT Timing** — cyclic-loop period min/mean/max, max jitter (largest deviation from the expected period, early or late), cumulative deadline-overrun count, and overruns since the previous report.
+
+Levels: link down, a slave offline/not-operational/not configured by the master, or a drive fault → `ERROR`;
+incomplete working counter, high DC clock drift, or loop overruns since the previous report → `WARN`.
+A failure to set up the diagnostics node or publisher thread is logged as an error,
+diagnostics collection in the cyclic loop is disabled for that activation, and activation continues without diagnostics.
+A failed publication is logged (throttled) and retried on the next period.
+
+The IgH realtime API does not expose Tx-error / lost-frame counters directly, so the master status
+reports the working-counter-derived incomplete-cycle count as a lost-frame proxy.
+Counting starts only once the domain working counter has first reached COMPLETE,
+so the incomplete cycles expected while slaves transition towards OP are not counted as losses.
+Until the first EtherCAT cycle has produced a snapshot, the master and slave statuses report `OK` with
+"Waiting for first EtherCAT cycle" rather than a spurious link-down error.
+If a refresh of a register-derived value (AL status code, DC system-time difference) fails,
+that value is omitted until the next successful read instead of reporting the stale sample.
+The DC propagation delay is read once and read again after the slave has been offline.
+
+The publisher starts as soon as the master is activated, i.e. **before** the blocking bring-up loop
+that waits for all slaves to reach OP. This means a slave stuck during initialization (for example
+DC clocks not converging) stays observable on `/diagnostics` — the per-slave status shows the AL
+state it is stuck in and the AL status code explaining why — instead of the feed only appearing once
+bring-up has already succeeded.
+
+When bring-up fails, on a timeout or a shutdown request, `on_activate()` stops the diagnostics
+before it releases the master.
+If any activation step after the publisher has started throws instead,
+the publisher is stopped and joined before the exception propagates.
 
 ### Real-time activation loop
 
@@ -197,6 +246,7 @@ ethercat_driver/
 - `transmission_interface`: transmission loaders and runtime mapping primitives.
 - `ethercat_interface`: EtherCAT master/slave abstraction layer.
 - `pluginlib`, `rclcpp`, `rclcpp_lifecycle`: plugin and lifecycle integration.
+- `diagnostic_updater`, `diagnostic_msgs`: EtherCAT health diagnostics publishing.
 
 ### Build/Test Dependencies
 

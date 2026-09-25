@@ -9,6 +9,8 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_ros REQUIRED)
 
+find_package(diagnostic_msgs REQUIRED)
+find_package(diagnostic_updater REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -34,6 +36,8 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 
 ament_target_dependencies(
   ${PROJECT_NAME}
+  diagnostic_msgs
+  diagnostic_updater
   hardware_interface
   pluginlib
   rclcpp
@@ -140,6 +144,8 @@ if(BUILD_TESTING)
   )
 
   ament_target_dependencies(test_ethercat_safety_driver
+    diagnostic_msgs
+    diagnostic_updater
     hardware_interface
     pluginlib
     rclcpp
@@ -162,6 +168,8 @@ if(BUILD_TESTING)
     ${YAML_CPP_LIBRARIES}
   )
   ament_target_dependencies(test_loader_backed_transmission_coupling
+    diagnostic_msgs
+    diagnostic_updater
     hardware_interface
     pluginlib
     rclcpp
@@ -182,6 +190,8 @@ ament_export_libraries(
   ${PROJECT_NAME}
 )
 ament_export_dependencies(
+  diagnostic_msgs
+  diagnostic_updater
   hardware_interface
   pluginlib
   rclcpp
