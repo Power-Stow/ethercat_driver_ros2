@@ -17,13 +17,13 @@
 #ifndef ETHERCAT_MANAGER__EC_MASTER_ASYNC_HPP_
 #define ETHERCAT_MANAGER__EC_MASTER_ASYNC_HPP_
 
-#include <ios>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <stdio.h>
 #include <ecrt.h>
 #include <errno.h>
+#include <ios>
 #include <sstream>
 #include <map>
 #include <string>
@@ -93,8 +93,8 @@ public:
     if (ioctl(fd_, EC_IOCTL_SLAVE_SDO_DOWNLOAD, data) < 0) {
       std::stringstream err;
       if (errno == EIO && data->abort_code) {
-        if (const auto err_it = abort_code_map_.find(data->abort_code); err_it != abort_code_map_.end()) {
-          err << "SDO transfer aborted: " << err_it->second;
+        if (const auto it = abort_code_map_.find(data->abort_code); it != abort_code_map_.end()) {
+          err << "SDO transfer aborted: " << it->second;
         } else {
           err << "SDO transfer aborted with unknown abort code: 0x" << std::hex << data->abort_code;
         }
@@ -111,8 +111,8 @@ public:
     if (ioctl(fd_, EC_IOCTL_SLAVE_SDO_UPLOAD, data) < 0) {
       std::stringstream err;
       if (errno == EIO && data->abort_code) {
-        if (const auto err_it = abort_code_map_.find(data->abort_code); err_it != abort_code_map_.end()) {
-          err << "SDO transfer aborted: " << err_it->second;
+        if (const auto it = abort_code_map_.find(data->abort_code); it != abort_code_map_.end()) {
+          err << "SDO transfer aborted: " << it->second;
         } else {
           err << "SDO transfer aborted with unknown abort code: 0x" << std::hex << data->abort_code;
         }

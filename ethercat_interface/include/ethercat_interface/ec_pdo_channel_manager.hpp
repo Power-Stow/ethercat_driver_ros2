@@ -22,14 +22,14 @@
 #include <yaml-cpp/yaml.h>
 #include <ecrt.h>
 
-#include "ethercat_interface/ec_sdo_manager.hpp"
-
 #include <string>
 #include <vector>
 #include <limits>
 #include <stdexcept>
 #include <utility>
 #include <sstream>
+
+#include "ethercat_interface/ec_sdo_manager.hpp"
 
 namespace ethercat_interface
 {

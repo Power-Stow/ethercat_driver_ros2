@@ -145,7 +145,8 @@ public:
 
   /// Decode `size` bytes of `buffer` as `data_type`. Returns false for a type this does not handle,
   /// or when `size` is not exactly that type's width. A longer upload means the configured type is
-  /// narrower than the object, and its low-order bytes alone would decode to a plausible wrong value.
+  /// narrower than the object,
+  /// and its low-order bytes alone would decode to a plausible wrong value.
   static bool buffer_read(
     const uint8_t * buffer, size_t size, const std::string & data_type,
     double * value)

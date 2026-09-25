@@ -124,8 +124,9 @@ TEST(TestEcPdoSingleInterfaceChannelManager, RejectZeroFactorFromSdoScale)
 }
 
 // An unsupported type is rejected when the config is parsed, even beside a literal factor. Left to
-// the decoder, the read would fail only after reaching the drive, and resolution would take that for
-// an unreadable drive and fall back on the literal without flagging the config.
+// the decoder, the read would fail only after reaching the drive,
+// and resolution would take that for an unreadable drive
+// and fall back on the literal without flagging the config.
 TEST(TestEcPdoSingleInterfaceChannelManager, RejectUnsupportedFactorFromSdoType)
 {
   const char channel_config[] =
@@ -173,8 +174,9 @@ TEST(TestSdoConfigEntry, BufferReadRejectsShortAndUnknown)
   ASSERT_FALSE(ethercat_interface::SdoConfigEntry::buffer_read(buffer, 4, "uint32", nullptr));
 }
 
-// An upload wider than the configured type fails too. Decoding only its low-order bytes would give a
-// plausible wrong factor, and a successful read would bypass any literal fallback.
+// An upload wider than the configured type fails too.
+// Decoding only its low-order bytes would give a plausible wrong factor,
+// and a successful read would bypass any literal fallback.
 TEST(TestSdoConfigEntry, BufferReadRejectsOversizedUpload)
 {
   uint8_t buffer[8] = {0};
