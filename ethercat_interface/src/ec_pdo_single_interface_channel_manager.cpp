@@ -17,6 +17,7 @@
 #include <bitset>
 #include <iostream>
 #include "ethercat_interface/ec_pdo_single_interface_channel_manager.hpp"
+#include "ethercat_interface/ec_sdo_manager.hpp"
 
 namespace ethercat_interface
 {
@@ -113,6 +114,43 @@ bool CLASSM::load_from_config(YAML::Node channel_config)
   // factor
   if (channel_config["factor"]) {
     factor = channel_config["factor"].as<double>();
+  }
+  // factor read from the drive, for a value the drive expresses as a fraction of a rating it
+  // stores. Any `factor` above stays as the fallback for a drive whose rating cannot be read.
+  if (channel_config["factor_from_sdo"]) {
+    // Marked before anything can fail. The caller does not act on this function's result, so a
+    // source that failed to parse and was simply forgotten would leave the channel at its default
+    // factor of 1, publishing unconverted values; kept as configured-but-invalid, it fails the
+    // bring-up instead.
+    factor_source.configured = true;
+    factor_source.has_literal_fallback = static_cast<bool>(channel_config["factor"]);
+    factor_source.literal_factor = factor;
+
+    const auto source_config = channel_config["factor_from_sdo"];
+    if (!source_config["index"] || !source_config["sub_index"] || !source_config["type"]) {
+      std::cerr << "channel: " << index <<
+        " : factor_from_sdo needs index, sub_index and type" << std::endl;
+      return false;
+    }
+    factor_source.index = source_config["index"].as<uint16_t>();
+    factor_source.sub_index = source_config["sub_index"].as<uint8_t>();
+    factor_source.data_type = source_config["type"].as<std::string>();
+    // Checked here rather than left to the decoder: a read that failed on the type would look like
+    // an unreachable drive, and a channel with a literal factor would quietly fall back on it.
+    if (!SdoConfigEntry::is_supported_type(factor_source.data_type)) {
+      std::cerr << "channel: " << index << " : factor_from_sdo type '" <<
+        factor_source.data_type << "' is not supported" << std::endl;
+      return false;
+    }
+    if (source_config["scale"]) {
+      factor_source.scale = source_config["scale"].as<double>();
+    }
+    if (factor_source.scale == 0.0) {
+      std::cerr << "channel: " << index <<
+        " : factor_from_sdo scale must not be zero" << std::endl;
+      return false;
+    }
+    factor_source.valid = true;
   }
   // offset
   if (channel_config["offset"]) {

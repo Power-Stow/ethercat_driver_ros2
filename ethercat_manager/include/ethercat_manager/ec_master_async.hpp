@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <ecrt.h>
 #include <errno.h>
+#include <ios>
 #include <sstream>
 #include <map>
 #include <string>
@@ -92,7 +93,11 @@ public:
     if (ioctl(fd_, EC_IOCTL_SLAVE_SDO_DOWNLOAD, data) < 0) {
       std::stringstream err;
       if (errno == EIO && data->abort_code) {
-        err << "SDO transfer aborted: " << abort_code_map_.find(data->abort_code)->second;
+        if (const auto it = abort_code_map_.find(data->abort_code); it != abort_code_map_.end()) {
+          err << "SDO transfer aborted: " << it->second;
+        } else {
+          err << "SDO transfer aborted with unknown abort code: 0x" << std::hex << data->abort_code;
+        }
         throw MasterException(err.str());
       } else {
         err << "Failed to download SDO: " << strerror(errno);
@@ -106,7 +111,11 @@ public:
     if (ioctl(fd_, EC_IOCTL_SLAVE_SDO_UPLOAD, data) < 0) {
       std::stringstream err;
       if (errno == EIO && data->abort_code) {
-        err << "SDO transfer aborted: " << abort_code_map_.find(data->abort_code)->second;
+        if (const auto it = abort_code_map_.find(data->abort_code); it != abort_code_map_.end()) {
+          err << "SDO transfer aborted: " << it->second;
+        } else {
+          err << "SDO transfer aborted with unknown abort code: 0x" << std::hex << data->abort_code;
+        }
         throw MasterException(err.str());
       } else {
         err << "Failed to upload SDO: " << strerror(errno);

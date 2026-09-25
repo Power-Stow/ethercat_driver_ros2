@@ -1150,6 +1150,66 @@ CallbackReturn EthercatDriver::configNetwork()
     }
   }
 
+  // Channel factors the drive holds rather than the config, such as a current reported in
+  // thousandths of a rated current the drive stores. Read after the startup SDOs, so a rating those
+  // write is the one read back, and before activation, so no conversion has run with the wrong
+  // factor.
+  size_t unresolved_factor_count = 0;
+  for (auto i = 0ul; i < ec_modules_.size(); i++) {
+    // Addressed by alias as well as position: with a nonzero alias the position is relative to it,
+    // and reading by position alone would ask whichever slave sits at that ring position.
+    const uint16_t slave_alias = ec_modules_[i]->alias_;
+    const uint16_t slave_position = ec_modules_[i]->position_;
+    const auto read_sdo = [this, slave_alias, slave_position](
+      uint16_t index, uint8_t sub_index, const std::string & data_type, double * value)
+      {
+        uint32_t abort_code = 0;
+        const int ret = master_->readSlaveSdo(
+          slave_alias, slave_position, index, sub_index, data_type, value, &abort_code);
+        if (ret) {
+          RCLCPP_ERROR(
+            rclcpp::get_logger("EthercatDriver"),
+            "Failed to read SDO index 0x%x subindex 0x%x from alias %u position %u for a channel "
+            "factor: %s. CoE abort code 0x%08x",
+            index,
+            sub_index,
+            slave_alias,
+            slave_position,
+            std::strerror(ret < 0 ? -ret : ret),
+            abort_code);
+          return false;
+        }
+        return true;
+      };
+
+    if (!ec_modules_[i]->resolve_sdo_factors(read_sdo)) {
+      ++unresolved_factor_count;
+      RCLCPP_ERROR(
+        rclcpp::get_logger("EthercatDriver"),
+        "Module '%s' at alias %u position %u has a channel factor that could not be read from "
+        "the drive and no configured factor to fall back on.",
+        ec_module_parameters_[i].at("name").c_str(),
+        ec_modules_[i]->alias_,
+        ec_modules_[i]->position_);
+    }
+  }
+
+  if (unresolved_factor_count > 0) {
+    // Fatal whatever require_startup_sdo says. A missed startup SDO leaves the drive on a value it
+    // already held, which is at least a value the drive chose. A missed factor leaves the channel
+    // at the default factor of 1, so it publishes raw drive units under an interface that claims to
+    // be converted: a current in thousandths of rated reported as amperes, wrong by the rating and
+    // still shaped like a current. A channel that should survive an unreadable drive declares a
+    // literal `factor` as well.
+    RCLCPP_FATAL(
+      rclcpp::get_logger("EthercatDriver"),
+      "%zu module(s) have a channel factor that could not be read from the drive and no configured "
+      "factor to fall back on; refusing to bring the bus up with channels that would report "
+      "unconverted values.",
+      unresolved_factor_count);
+    return CallbackReturn::ERROR;
+  }
+
   if (failed_sdo_count > 0) {
     if (require_startup_sdo_) {
       // The startup SDOs carry values such as the drive's speed limit, torque limits and control

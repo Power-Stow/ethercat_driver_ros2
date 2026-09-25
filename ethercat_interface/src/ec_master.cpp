@@ -27,6 +27,7 @@
 #include <iostream>
 #include <sstream>
 #include <bitset>
+#include <cerrno>
 #include <cstring>
 #include <utility>
 
@@ -234,6 +235,85 @@ int EcMaster::configSlaveSdo(
     abort_code
   );
   return ret;
+}
+
+int EcMaster::resolveRingPosition(uint16_t alias, uint16_t position, uint16_t * ring_position)
+{
+  if (alias == 0) {
+    *ring_position = position;
+    return 0;
+  }
+
+  ec_master_info_t master_info;
+  int ret = ecrt_master(master_, &master_info);
+  if (ret) {
+    return ret;
+  }
+  for (unsigned int ring = 0; ring < master_info.slave_count; ++ring) {
+    ec_slave_info_t slave_info;
+    ret = ecrt_master_get_slave(master_, static_cast<uint16_t>(ring), &slave_info);
+    if (ret) {
+      return ret;
+    }
+    if (slave_info.alias != alias) {
+      continue;
+    }
+    // Counted from the first slave with the alias, as IgH does when it attaches a slave config.
+    if (ring + position >= master_info.slave_count) {
+      return -ENOENT;
+    }
+    *ring_position = static_cast<uint16_t>(ring + position);
+    return 0;
+  }
+  return -ENOENT;
+}
+
+int EcMaster::readSlaveSdo(
+  uint16_t alias,
+  uint16_t position,
+  uint16_t index,
+  uint8_t sub_index,
+  const std::string & data_type,
+  double * value,
+  uint32_t * abort_code)
+{
+  if (master_ == nullptr) {
+    printWarning("Read SDO. Master is not available.");
+    return -1;
+  }
+  if (value == nullptr) {
+    return -1;
+  }
+
+  uint16_t slave_position = 0;
+  int ret = resolveRingPosition(alias, position, &slave_position);
+  if (ret) {
+    printWarning(
+      "Read SDO. No slave at alias " + std::to_string(alias) + " position " +
+      std::to_string(position) + ".");
+    return ret;
+  }
+
+  uint8_t buffer[8] = {0};
+  size_t result_size = 0;
+  ret = ecrt_master_sdo_upload(
+    master_,
+    slave_position,
+    index,
+    sub_index,
+    buffer,
+    sizeof(buffer),
+    &result_size,
+    abort_code
+  );
+  if (ret) {
+    return ret;
+  }
+  if (!SdoConfigEntry::buffer_read(buffer, result_size, data_type, value)) {
+    printWarning("Read SDO. Unsupported data type, or upload size does not match it.");
+    return -1;
+  }
+  return 0;
 }
 
 void EcMaster::registerPDOInDomain(
