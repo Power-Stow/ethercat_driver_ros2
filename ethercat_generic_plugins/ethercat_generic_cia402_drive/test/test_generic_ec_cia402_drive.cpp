@@ -988,6 +988,38 @@ TEST_F(EcCiA402DriveTest, ResetWindDownDiscardsAnUnconsumedFaultResetRequest)
   EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, 0);
 }
 
+TEST_F(EcCiA402DriveTest, FaultResetRequestedOutsideFaultIsDropped)
+{
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->auto_fault_reset_ = false;
+  plugin_->reset_fault_on_startup_ = false;
+
+  constexpr uint16_t enable_operation = 0x000F;
+  constexpr uint16_t fault_reset_bit = 0x0080;
+
+  // Requested while the drive is healthy, where there is nothing for it to reset.
+  plugin_->fault_reset_ = true;
+  EXPECT_EQ(plugin_->transition(STATE_OPERATION_ENABLED, enable_operation) & fault_reset_bit, 0);
+
+  // A later fault waits for a request of its own.
+  EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, 0);
+}
+
+TEST_F(EcCiA402DriveTest, FaultResetRequestedDuringFaultReactionIsKept)
+{
+  plugin_->setup_from_config(YAML::Load(test_drive_config));
+  plugin_->auto_fault_reset_ = false;
+  plugin_->reset_fault_on_startup_ = false;
+
+  constexpr uint16_t enable_operation = 0x000F;
+  constexpr uint16_t fault_reset_bit = 0x0080;
+
+  // Requested while the drive is still winding into the Fault it is meant to clear.
+  plugin_->fault_reset_ = true;
+  EXPECT_EQ(plugin_->transition(STATE_FAULT_REACTION_ACTIVE, enable_operation) & fault_reset_bit, 0);
+  EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, fault_reset_bit);
+}
+
 TEST_F(EcCiA402DriveTest, FaultLatchTakesTheNewCodeWhenItArrivesAfterTheEdge)
 {
   plugin_->setup_from_config(YAML::Load(test_drive_config));
