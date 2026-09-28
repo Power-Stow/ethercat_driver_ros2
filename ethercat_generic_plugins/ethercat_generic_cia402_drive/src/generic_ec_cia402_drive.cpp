@@ -748,6 +748,13 @@ DeviceState EcCiA402Drive::deviceState(uint16_t status_word)
 /** returns the control word that will take device from state to next desired state */
 uint16_t EcCiA402Drive::transition(DeviceState state, uint16_t control_word)
 {
+  // A reset request is only consumed in Fault, so one that arrives while the drive is anywhere else
+  // would stay armed and clear the next fault the moment it is raised, without anyone having asked.
+  // Fault Reaction Active keeps it, because the Fault it is winding into is the one being reset.
+  if (state != STATE_FAULT && state != STATE_FAULT_REACTION_ACTIVE) {
+    fault_reset_ = false;
+  }
+
   switch (state) {
     case STATE_START:                     // -> STATE_NOT_READY_TO_SWITCH_ON (automatic)
       return control_word;
