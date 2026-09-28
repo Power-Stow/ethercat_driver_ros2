@@ -1016,7 +1016,8 @@ TEST_F(EcCiA402DriveTest, FaultResetRequestedDuringFaultReactionIsKept)
 
   // Requested while the drive is still winding into the Fault it is meant to clear.
   plugin_->fault_reset_ = true;
-  EXPECT_EQ(plugin_->transition(STATE_FAULT_REACTION_ACTIVE, enable_operation) & fault_reset_bit, 0);
+  const uint16_t reacting = plugin_->transition(STATE_FAULT_REACTION_ACTIVE, enable_operation);
+  EXPECT_EQ(reacting & fault_reset_bit, 0);
   EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, fault_reset_bit);
 }
 
