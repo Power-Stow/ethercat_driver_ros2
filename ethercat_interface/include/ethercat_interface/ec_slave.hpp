@@ -65,6 +65,9 @@ public:
    *  again. The driver calls this on every activation, because the same slave instances are
    *  reused across a deactivate/activate cycle. */
   virtual void reset_wind_down() {}
+  /** True once the slave has dropped out in a way that only a new activation of the hardware
+   *  component recovers from. The driver deactivates the component when any slave reports it. */
+  virtual bool requires_reactivation() const noexcept {return false;}
 
   /// Read a single SDO from a slave: index, sub-index, data type, decoded value out. False on
   /// failure.

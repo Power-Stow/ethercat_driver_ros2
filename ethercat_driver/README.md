@@ -226,6 +226,24 @@ The modules are created once, in `on_init()`, and outlive a deactivate/activate 
 wind-down left in force would go on commanding the slaves down instead of letting them come back
 up.
 
+### Slave dropout
+
+A module reports `EcSlave::requires_reactivation()` once its slave has dropped out, see `ethercat_generic_cia402_drive` for when a CiA-402 drive does.
+`write()` then logs the module and returns `DEACTIVATE`.
+The controller manager deactivates every controller that claims a command interface of the component, and moves the component to inactive.
+That runs `on_deactivate()`: the remaining drives are wound down and the master is released, which leaves every slave in PREOP.
+Broadcasters keep running, on the last values read.
+
+Recovery is activating the component again, followed by the controllers:
+
+```bash
+ros2 control set_hardware_component_state <component> active
+ros2 control switch_controllers --activate <controllers>
+```
+
+Activation re-applies every startup SDO, which a drive that lost power no longer holds, and fails if the slave has not come back.
+It also sets every position command to NaN, and every velocity and effort command to zero, before the bus comes up, so no drive is enabled onto a command released before the deactivation.
+
 ## Package Organization
 
 ```text

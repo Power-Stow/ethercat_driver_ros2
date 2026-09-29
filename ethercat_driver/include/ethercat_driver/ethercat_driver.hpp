@@ -250,6 +250,13 @@ protected:
   /// The joint's last read position state, or NaN when it has no position state interface.
   double joint_position_state(size_t joint_index) const;
 
+  /// Set every position command to NaN, which holds each drive where it is found, and every
+  /// velocity and effort command to zero.
+  void reset_motion_commands();
+
+  /// "<name> (alias <alias> position <position>)" for the module at @p module_index.
+  std::string module_description(size_t module_index) const;
+
   // --- Health diagnostics (opt-in via the "publish_diagnostics" hardware parameter) ---
   bool publish_diagnostics_ = false;
   double diagnostics_period_s_ = 1.0;

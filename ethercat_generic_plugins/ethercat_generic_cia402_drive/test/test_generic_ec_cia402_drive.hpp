@@ -64,6 +64,15 @@ class FriendEcCiA402Drive : public ethercat_generic_plugins::EcCiA402Drive
   FRIEND_TEST(EcCiA402DriveTest, FaultResetRequestedOutsideFaultIsDropped);
   FRIEND_TEST(EcCiA402DriveTest, FaultResetRequestedDuringFaultReactionIsKept);
   FRIEND_TEST(EcCiA402DriveTest, FaultLatchTakesTheNewCodeWhenItArrivesAfterTheEdge);
+  FRIEND_TEST(EcCiA402DriveTest, DropoutLatchesWhenTheSlaveLeavesOp);
+  FRIEND_TEST(EcCiA402DriveTest, DropoutIsNotLatchedBeforeTheSlaveFirstReachesOp);
+  FRIEND_TEST(EcCiA402DriveTest, DropoutHoldsDisableVoltageWhenTheSlaveReturns);
+  FRIEND_TEST(EcCiA402DriveTest, DropoutHoldsTheLastReadPositionInCsp);
+  FRIEND_TEST(EcCiA402DriveTest, DropoutLatchesWhenTheDriveFallsOutOfOperationEnabledUnasked);
+  FRIEND_TEST(EcCiA402DriveTest, DropoutIsNotLatchedByAWindDown);
+  FRIEND_TEST(EcCiA402DriveTest, DropoutIsNotLatchedByAFault);
+  FRIEND_TEST(EcCiA402DriveTest, DropoutCompletesTheWindDownAtOnce);
+  FRIEND_TEST(EcCiA402DriveTest, ResetWindDownClearsADropoutAndTheOperationalFlag);
 };
 
 class EcCiA402DriveTest : public ::testing::Test

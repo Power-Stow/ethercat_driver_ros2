@@ -1253,6 +1253,9 @@ CallbackReturn EthercatDriver::on_activate(
   for (auto & module : ec_modules_) {
     module->reset_wind_down();
   }
+  // The controllers stopped at the last deactivation released their commands to the positions read
+  // then, and the axes may have moved since, not least while a drive that dropped out was off.
+  reset_motion_commands();
 
   // setup master
   if (setupMaster() != CallbackReturn::SUCCESS) {
@@ -1469,22 +1472,47 @@ std::string EthercatDriver::pendingModuleDescription() const
       continue;
     }
 
-    std::string name = "<unnamed>";
-    if (i < ec_module_parameters_.size()) {
-      const auto name_it = ec_module_parameters_[i].find("name");
-      if (name_it != ec_module_parameters_[i].end()) {
-        name = name_it->second;
-      }
-    }
-
     if (!pending.empty()) {
       pending += ", ";
     }
-    pending += name + " (alias " + std::to_string(ec_modules_[i]->alias_) +
-      " position " + std::to_string(ec_modules_[i]->position_) + ")";
+    pending += module_description(i);
   }
 
   return pending.empty() ? "none" : pending;
+}
+
+std::string EthercatDriver::module_description(size_t module_index) const
+{
+  std::string name = "<unnamed>";
+  if (module_index < ec_module_parameters_.size()) {
+    const auto name_it = ec_module_parameters_[module_index].find("name");
+    if (name_it != ec_module_parameters_[module_index].end()) {
+      name = name_it->second;
+    }
+  }
+
+  return name + " (alias " + std::to_string(ec_modules_[module_index]->alias_) +
+         " position " + std::to_string(ec_modules_[module_index]->position_) + ")";
+}
+
+void EthercatDriver::reset_motion_commands()
+{
+  for (size_t j = 0; j < info_.joints.size(); j++) {
+    for (size_t i = 0; i < info_.joints[j].command_interfaces.size(); i++) {
+      const std::string & name = info_.joints[j].command_interfaces[i].name;
+      // Velocity and effort are zeroed rather than NaN, which writes the channel's configured
+      // default, and that need not be zero.
+      if (name == hardware_interface::HW_IF_POSITION) {
+        hw_joint_commands_[j][i] = std::numeric_limits<double>::quiet_NaN();
+        raw_joint_commands_[j][i] = std::numeric_limits<double>::quiet_NaN();
+      } else if (name == hardware_interface::HW_IF_VELOCITY || // NOLINT
+        name == hardware_interface::HW_IF_EFFORT)
+      {
+        hw_joint_commands_[j][i] = 0.0;
+        raw_joint_commands_[j][i] = 0.0;
+      }
+    }
+  }
 }
 
 void EthercatDriver::windDownSlaves(bool elevate_scheduling)
@@ -1751,6 +1779,26 @@ hardware_interface::return_type EthercatDriver::write(
       transmission->joint_to_actuator(hw_joint_commands_, raw_joint_commands_);
     }
     master_->writeData();
+
+    // The controller manager stops every controller commanding this component and takes it to
+    // inactive, which releases the master. Activating it again is the recovery, because that
+    // re-applies the startup SDOs a drive loses with its power. Returned once: once inactive, the
+    // component is no longer activated_.
+    bool dropped_out = false;
+    for (size_t i = 0; i < ec_modules_.size(); ++i) {
+      if (ec_modules_[i]->requires_reactivation()) {
+        dropped_out = true;
+        RCLCPP_ERROR(
+          rclcpp::get_logger("EthercatDriver"),
+          "EtherCAT module %s dropped out. Deactivating hardware component '%s'; activate it again "
+          "to recover.",
+          module_description(i).c_str(),
+          info_.name.c_str());
+      }
+    }
+    if (dropped_out) {
+      return hardware_interface::return_type::DEACTIVATE;
+    }
   }
   if (!lock.owns_lock()) {
     RCLCPP_WARN_THROTTLE(
