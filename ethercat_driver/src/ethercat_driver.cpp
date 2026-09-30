@@ -1660,10 +1660,10 @@ void EthercatDriver::release_joint_command(const std::string & interface_name)
 
       if (name == hardware_interface::HW_IF_POSITION) {
         // Held at the joint's last read position. A NaN is not "stay where you are" for every
-        // module: the channel managers write their configured default in place of it, which only
-        // the CiA-402 plugin keeps at the last read position, so a generic channel defaulting to
-        // zero would be commanded to zero. Without a position reading to hold, the last command is
-        // left in place.
+        // module: the channel managers write their configured default in place of it, and only the
+        // CiA-402 plugin and a generic slave with a position state interface hold the read position
+        // instead, so any other channel defaulting to zero would be commanded to zero. Without a
+        // position reading to hold, the last command is left in place.
         const double held_position = joint_position_state(j);
         if (std::isnan(held_position)) {
           RCLCPP_WARN(

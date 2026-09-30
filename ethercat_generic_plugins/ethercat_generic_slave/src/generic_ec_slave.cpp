@@ -19,6 +19,7 @@
 #include <numeric>
 
 #include "ethercat_generic_plugins/generic_ec_slave.hpp"
+#include "ethercat_interface/ec_pdo_channel_manager.hpp"
 #include "ethercat_interface/ec_pdo_single_interface_channel_manager.hpp"
 #include "ethercat_interface/ec_pdo_group_interface_channel_manager.hpp"
 
@@ -37,7 +38,29 @@ int GenericEcSlave::assign_activate_dc_sync() {return assign_activate_;}
 
 void GenericEcSlave::processData(size_t entry_idx, uint8_t * domain_address)
 {
-  pdo_channels_info_[domain_map_[entry_idx]]->ec_update(domain_address);
+  auto * channel = pdo_channels_info_[domain_map_[entry_idx]];
+  if (channel == position_command_channel_ && hold_read_position(domain_address)) {
+    return;
+  }
+  channel->ec_update(domain_address);
+}
+
+bool GenericEcSlave::hold_read_position(uint8_t * domain_address)
+{
+  if (!position_state_index_) {
+    return false;
+  }
+  const double command =
+    command_interface_ptr_->at(position_command_channel_->command_interface_index(0));
+  const double position = state_interface_ptr_->at(*position_state_index_);
+  if (!std::isnan(command) || std::isnan(position)) {
+    return false;
+  }
+  // Safe without knowing whether the reading is valid yet: a slave applies outputs only in OP, and
+  // its inputs are valid from SAFEOP on, so an output it acts on was computed from a valid reading.
+  position_command_channel_->ec_read_to_interface(domain_address);
+  position_command_channel_->ec_write(domain_address, position);
+  return true;
 }
 
 const ec_sync_info_t * GenericEcSlave::syncs()
@@ -350,6 +373,29 @@ void GenericEcSlave::setup_interface_mapping()
     }
 
     channel.setup_interface_ptrs(state_interface_ptr_, command_interface_ptr_);
+  }
+
+  // A released position command is otherwise written as the configured default, which is a fixed
+  // value rather than where the axis is.
+  position_command_channel_ = nullptr;
+  position_state_index_.reset();
+  for (auto * channel_ptr : pdo_channels_info_) {
+    auto * channel =
+      dynamic_cast<ethercat_interface::EcPdoSingleInterfaceChannelManager *>(channel_ptr);
+    if (channel == nullptr || !channel->has_interface_name(0) ||
+      channel->interface_name() != "position")
+    {
+      continue;
+    }
+    const bool is_command = channel->pdo_type == ethercat_interface::RPDO &&
+      channel->has_command_interface_name() && channel->is_command_interface_defined();
+    const bool is_state = channel->pdo_type == ethercat_interface::TPDO &&
+      channel->has_state_interface_name() && channel->is_state_interface_defined();
+    if (is_command) {
+      position_command_channel_ = channel;
+    } else if (is_state) {
+      position_state_index_ = channel->state_interface_index(0);
+    }
   }
 }
 
