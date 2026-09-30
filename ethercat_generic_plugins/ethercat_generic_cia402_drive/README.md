@@ -113,7 +113,7 @@ It clears the dropout latch and the cached operational flag too, see [Dropout](#
 
 ## Dropout
 
-The plugin latches a dropout when either of these happens during an activation:
+The plugin latches a dropout when either of these happens while a slave is active:
 
 - the slave leaves EtherCAT OP after having been in it,
 - the drive falls from Operation Enabled to Switch On Disabled or Not Ready to Switch On while Enable Operation is being commanded, outside a wind-down.
@@ -180,12 +180,12 @@ boots with a position outside the URDF-configured joint bounds.
 
 Add these optional `<param>` entries in the corresponding `<ec_module>` block:
 
-| Name                                | Type                    | Default                                                    | Description                                                                                                                                                             |
+| Name | Type | Default | Description |
 | ----------------------------------- | ----------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `joint_offset_startup_wrap_enabled` | `bool` (`true`/`false`) | `false`                                                    | Once the slave sends data, wrap the first offset-compensated TPDO position sample into `[-pi, pi]` and fold the branch correction into the runtime `joint_offset`.      |
-| `csv_dump_enabled`                  | `bool` (`true`/`false`) | `false`                                                    | Enables CSV dump when set to `true`.                                                                                                                                    |
-| `csv_dump_path`                     | `string`                | `logs/log_YYYYMMDD_HHMMSS_cia402_a<alias>_p<position>.csv` | Output CSV file path.                                                                                                                                                   |
-| `csv_dump_flush_every_n`            | `uint`                  | `1`                                                        | Flush the file every N rows (minimum 1).                                                                                                                                |
+| `joint_offset_startup_wrap_enabled` | `bool` (`true`/`false`) | `false` | Once the slave sends data, wrap the first offset-compensated TPDO position sample into `[-pi, pi]` and fold the branch correction into the runtime `joint_offset`. |
+| `csv_dump_enabled` | `bool` (`true`/`false`) | `false` | Enables CSV dump when set to `true`. |
+| `csv_dump_path` | `string` | `logs/log_YYYYMMDD_HHMMSS_cia402_a<alias>_p<position>.csv` | Output CSV file path. |
+| `csv_dump_flush_every_n` | `uint` | `1` | Flush the file every N rows (minimum 1). |
 
 ### CSV columns
 

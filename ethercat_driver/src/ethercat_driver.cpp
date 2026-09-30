@@ -1505,7 +1505,7 @@ void EthercatDriver::reset_motion_commands()
       if (name == hardware_interface::HW_IF_POSITION) {
         hw_joint_commands_[j][i] = std::numeric_limits<double>::quiet_NaN();
         raw_joint_commands_[j][i] = std::numeric_limits<double>::quiet_NaN();
-      } else if (name == hardware_interface::HW_IF_VELOCITY || // NOLINT
+      } else if (name == hardware_interface::HW_IF_VELOCITY ||
         name == hardware_interface::HW_IF_EFFORT)
       {
         hw_joint_commands_[j][i] = 0.0;
