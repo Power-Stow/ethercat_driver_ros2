@@ -843,8 +843,10 @@ TEST_F(EcCiA402DriveTest, ResetWindDownRestoresCommandChannelsForReactivation)
   // A deactivate -> activate cycle reuses this instance, so the override the wind-down forced onto
   // every command channel has to come back off: otherwise the drive spends the next run pinned to
   // its defaults.
-  // reset_wind_down() forgets the state, and processData() on the torque channel does not decode
-  // the status word, so the drive is put back in Operation Enabled by hand.
+  // reset_wind_down() forgets the state and the operational flag, and processData() on the torque
+  // channel does not decode the status word, so the slave is put back in OP and the drive in
+  // Operation Enabled by hand.
+  plugin_->is_operational_ = true;
   plugin_->state_ = STATE_OPERATION_ENABLED;
   plugin_->processData(2, torque_address);
   EXPECT_EQ(EC_READ_S16(torque_address), 42);
