@@ -229,7 +229,8 @@ TEST_F(GenericEcSlaveTest, EcWriteRPDODefaultValue)
   ASSERT_EQ(EC_READ_S16(domain_address), -5);
 }
 
-// In test_slave_config, entry 0 is the position command 0x607a and entry 6 the position state 0x6064.
+// In test_slave_config, entry 0 is the position command 0x607a,
+// and entry 6 the position state 0x6064.
 TEST_F(GenericEcSlaveTest, PositionCommandHoldsTheReadPositionWhileReleased)
 {
   const double nan = std::numeric_limits<double>::quiet_NaN();
