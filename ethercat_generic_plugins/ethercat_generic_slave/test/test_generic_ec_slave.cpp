@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstdint>
+#include <limits>
 #include <map>
 #include <pluginlib/class_loader.hpp>
 #include "ethercat_interface/ec_slave.hpp"
@@ -225,6 +227,83 @@ TEST_F(GenericEcSlaveTest, EcWriteRPDODefaultValue)
   plugin_->processData(2, domain_address);
   ASSERT_EQ(plugin_->pdo_channels_info_[2]->data().last_value, -5);
   ASSERT_EQ(EC_READ_S16(domain_address), -5);
+}
+
+// In test_slave_config, entry 0 is the position command 0x607a,
+// and entry 6 the position state 0x6064.
+TEST_F(GenericEcSlaveTest, PositionCommandHoldsTheReadPositionWhileReleased)
+{
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  std::unordered_map<std::string, std::string> slave_parameters;
+  std::vector<double> state_interface = {nan};
+  std::vector<double> command_interface = {nan};
+  slave_parameters["state_interface/position"] = "0";
+  slave_parameters["command_interface/position"] = "0";
+  plugin_->parameters_ = slave_parameters;
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  plugin_->setup_from_config(YAML::Load(test_slave_config));
+  plugin_->setup_interface_mapping();
+
+  uint8_t position_address[4];
+  EC_WRITE_S32(position_address, 1234);
+  plugin_->processData(6, position_address);
+  ASSERT_DOUBLE_EQ(state_interface[0], 1234.0);
+
+  uint8_t target_address[4];
+  EC_WRITE_S32(target_address, 0);
+  plugin_->processData(0, target_address);
+  EXPECT_EQ(EC_READ_S32(target_address), 1234);
+
+  command_interface[0] = 500.0;
+  plugin_->processData(0, target_address);
+  EXPECT_EQ(EC_READ_S32(target_address), 500);
+
+  command_interface[0] = nan;
+  plugin_->processData(0, target_address);
+  EXPECT_EQ(EC_READ_S32(target_address), 1234);
+}
+
+TEST_F(GenericEcSlaveTest, PositionCommandFallsBackOnTheDefaultWithoutAReading)
+{
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  std::unordered_map<std::string, std::string> slave_parameters;
+  std::vector<double> state_interface = {nan};
+  std::vector<double> command_interface = {nan};
+  slave_parameters["state_interface/position"] = "0";
+  slave_parameters["command_interface/position"] = "0";
+  plugin_->parameters_ = slave_parameters;
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  YAML::Node slave_config = YAML::Load(test_slave_config);
+  slave_config["rpdo"][0]["channels"][0]["default"] = 7;
+  plugin_->setup_from_config(slave_config);
+  plugin_->setup_interface_mapping();
+
+  uint8_t target_address[4];
+  EC_WRITE_S32(target_address, 0);
+  plugin_->processData(0, target_address);
+  EXPECT_EQ(EC_READ_S32(target_address), 7);
+}
+
+TEST_F(GenericEcSlaveTest, PositionCommandUsesTheDefaultWithoutAPositionState)
+{
+  std::unordered_map<std::string, std::string> slave_parameters;
+  std::vector<double> state_interface = {1234.0};
+  std::vector<double> command_interface = {std::numeric_limits<double>::quiet_NaN()};
+  slave_parameters["command_interface/position"] = "0";
+  plugin_->parameters_ = slave_parameters;
+  plugin_->state_interface_ptr_ = &state_interface;
+  plugin_->command_interface_ptr_ = &command_interface;
+  YAML::Node slave_config = YAML::Load(test_slave_config);
+  slave_config["rpdo"][0]["channels"][0]["default"] = 7;
+  plugin_->setup_from_config(slave_config);
+  plugin_->setup_interface_mapping();
+
+  uint8_t target_address[4];
+  EC_WRITE_S32(target_address, 0);
+  plugin_->processData(0, target_address);
+  EXPECT_EQ(EC_READ_S32(target_address), 7);
 }
 
 TEST_F(GenericEcSlaveTest, SlaveSetupSDOConfig)

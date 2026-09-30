@@ -58,6 +58,11 @@ constexpr uint16_t CONTROL_WORD_QUICK_STOP = 0b00001011;
 /// energised state.
 constexpr uint16_t CONTROL_WORD_DISABLE_VOLTAGE = 0b00000000;
 
+/// CiA-402 Enable Operation: Switch On, Enable Voltage, Quick Stop and Enable Operation set, and
+/// Fault Reset clear, which are the bits the mask selects.
+constexpr uint16_t CONTROL_WORD_ENABLE_OPERATION = 0b00001111;
+constexpr uint16_t CONTROL_WORD_ENABLE_OPERATION_MASK = 0b10001111;
+
 /// True for the CiA-402 states in which the drive function is disabled, so that the frames may
 /// stop. Quick Stop Active and Fault Reaction Active are still decelerating under power, and an
 /// undefined or not-yet-read state says nothing about the power stage, so none of those qualify.
@@ -122,6 +127,30 @@ bool EcCiA402Drive::initialized() {return initialized_;}
 
 uint16_t EcCiA402Drive::last_fault_error_code() const noexcept {return last_fault_error_code_;}
 
+void EcCiA402Drive::set_state_is_operational(bool value)
+{
+  if (is_operational_ && !value) {
+    latch_dropout("left OP");
+  }
+  is_operational_ = value;
+}
+
+bool EcCiA402Drive::requires_reactivation() const noexcept {return dropout_latched_;}
+
+void EcCiA402Drive::latch_dropout(const char * reason)
+{
+  if (dropout_latched_) {
+    return;
+  }
+  dropout_latched_ = true;
+  RCLCPP_ERROR(
+    rclcpp::get_logger("EthercatDriver"),
+    "EcCiA402Drive: the drive %s. It is held at Disable Voltage until the hardware component is "
+    "activated again [slave pos: %u]",
+    reason,
+    position_);
+}
+
 ethercat_interface::Cia402Diagnostics EcCiA402Drive::cia402Diagnostics() const
 {
   ethercat_interface::Cia402Diagnostics diag;
@@ -151,6 +180,18 @@ void EcCiA402Drive::updateState()
   }
 
   latch_fault_error_code();
+  // Catches a short dropout that the operational flag, polled every few cycles, never shows: the
+  // drive loses its power stage or its link, lands de-energised, and the automatic transitions
+  // would walk it back up onto whatever setpoint is waiting. A fault is latched on its own, and a
+  // wind-down is not Enable Operation.
+  const bool enable_operation_commanded =
+    (last_control_word_ & CONTROL_WORD_ENABLE_OPERATION_MASK) == CONTROL_WORD_ENABLE_OPERATION;
+  if (!wind_down_requested_ && enable_operation_commanded &&
+    last_state_ == STATE_OPERATION_ENABLED &&
+    (state_ == STATE_SWITCH_ON_DISABLED || state_ == STATE_NOT_READY_TO_SWITCH_ON))
+  {
+    latch_dropout("left Operation Enabled unasked while Enable Operation was commanded");
+  }
   // The startup window closes the first time the drive is seen in a non-fault state past Not Ready
   // to Switch On. Until the slave is in OP its status word reads zero, which decodes to Not Ready,
   // so a fault the drive comes up in is still inside the window; one raised after it has reached
@@ -373,6 +414,17 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
   ethercat_interface::EcPdoSingleInterfaceChannelManager & channel(*channel_ptr);
   // Special case: ControlWord
   if (channel.index == CiA402D_RPDO_CONTROLWORD) {
+    last_control_word_ = static_cast<uint16_t>(channel.ec_read(domain_address));
+    if (dropout_latched_) {
+      // Not gated on is_operational_: a returning drive acts on the first control word it receives,
+      // and the flag catches up only at the next poll. The default is set too, because a wind-down
+      // forces override_command, which writes the default instead. Returning early skips
+      // ec_update(), which would write a mapped command interface, and is safe because RPDO entries
+      // precede TPDO entries, so this is never the domain's last entry.
+      channel.default_value = CONTROL_WORD_DISABLE_VOLTAGE;
+      channel.ec_write(domain_address, CONTROL_WORD_DISABLE_VOLTAGE);
+      return;
+    }
     if (wind_down_requested_) {
       // The wind-down owns the control word: a fault reset or an automatic transition back up to
       // Operation Enabled would undo the very thing it is trying to achieve, and a control word
@@ -420,7 +472,7 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
     // before that and no longer describes where the axis is, so commanding it at the moment the
     // power stage comes back steps the axis to it. Holding the last read position throughout means
     // the drive re-enables onto the position it is actually at.
-    const bool follow_position_command = !wind_down_requested_ &&
+    const bool follow_position_command = !wind_down_requested_ && !dropout_latched_ &&
       state_ == STATE_OPERATION_ENABLED &&
       mode_of_operation_display_ == ModeOfOperation::MODE_CYCLIC_SYNC_POSITION;
     channel.override_command = !follow_position_command;
@@ -458,7 +510,7 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
   }
 
   // The velocity and torque setpoints fall back to their configured defaults, zero, while the
-  // wind-down runs and whenever the drive is not in Operation Enabled.
+  // wind-down runs, after a dropout, and whenever the drive is not in Operation Enabled.
   //
   // Assigned every cycle rather than only set, because override_command lives on the channel and
   // outlives the condition that raised it. Setting it on the way up, which every bring-up does
@@ -472,7 +524,8 @@ void EcCiA402Drive::processData(size_t entry_idx, uint8_t * domain_address)
   // RPDO. The control word is driven by the state machine and the wind-down themselves, just above,
   // and the target position assigns its own override from `follow_position_command`.
   if (channel.index == CiA402D_RPDO_VELOCITY || channel.index == CiA402D_RPDO_EFFORT) {
-    channel.override_command = wind_down_requested_ || state_ != STATE_OPERATION_ENABLED;
+    channel.override_command = wind_down_requested_ || dropout_latched_ ||
+      state_ != STATE_OPERATION_ENABLED;
   }
 
   if (channel.index == CiA402D_TPDO_POSITION) {
@@ -846,7 +899,9 @@ bool EcCiA402Drive::wind_down_complete() const noexcept
   // Deliberately not short-cut on !is_operational_, which the master refreshes only every few
   // cycles: a drive can reach OP and Operation Enabled in between. A drive that never got that far
   // reads its zeroed status word as Not Ready to Switch On, and completes after a single cycle.
-  return wind_down_complete_;
+  // A drive that has dropped out is already held at Disable Voltage, and one that is off the bus
+  // would otherwise hold the wind-down for its whole budget on a stale status word.
+  return wind_down_complete_ || dropout_latched_;
 }
 
 void EcCiA402Drive::reset_wind_down()
@@ -862,6 +917,13 @@ void EcCiA402Drive::reset_wind_down()
   // all with auto_fault_reset and reset_fault_on_startup both off.
   fault_reset_ = false;
   last_fault_reset_command_ = false;
+
+  // A new activation is the one way out of a dropout. The operational flag is forgotten with it:
+  // the master only reports changes, and a fresh configuration starts out not operational, so a
+  // flag left over from the last session would pass the bring-up before the slave is back in OP.
+  dropout_latched_ = false;
+  is_operational_ = false;
+  initialized_ = false;
 
   // The state is forgotten too, so the first status word of the activation is decoded afresh rather
   // than compared against the one the last session ended on. A drive that was deactivated in Fault

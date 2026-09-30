@@ -109,6 +109,27 @@ One requested in the previous session and never consumed is discarded rather tha
 It forgets the drive state as well, so the first status word of each activation is decoded afresh.
 A drive deactivated in Fault that comes back up in Fault, perhaps for a different reason,
 then counts as a new fault: its error code replaces the one latched on `last_error_code` and is logged.
+It clears the dropout latch and the cached operational flag too, see [Dropout](#dropout).
+
+## Dropout
+
+The plugin latches a dropout when either of these happens while a slave is active:
+
+- the slave leaves EtherCAT OP after having been in it,
+- the drive falls from Operation Enabled to Switch On Disabled or Not Ready to Switch On while Enable Operation is being commanded, outside a wind-down.
+
+The second covers a dropout shorter than the master's operational poll, which the first never sees.
+A fault is not a dropout: it latches by itself and is cleared by a fault reset.
+
+While the latch holds:
+
+- the control word is Disable Voltage on every cycle, whatever the operational flag says, so a drive that comes back cannot walk itself up to Operation Enabled,
+- the motion setpoints are held as during a wind-down: the last read position, and the configured defaults for velocity and torque,
+- `requires_reactivation()` is true, which makes the driver deactivate the hardware component,
+- the wind-down reports complete at once, since the drive is already de-energised or off the bus.
+
+Only the next activation clears it, through `reset_wind_down()`.
+That also resets the cached operational flag, because the master reports only changes and a fresh configuration starts out not operational.
 
 ## Joint Offset Startup Wrap
 
@@ -159,12 +180,12 @@ boots with a position outside the URDF-configured joint bounds.
 
 Add these optional `<param>` entries in the corresponding `<ec_module>` block:
 
-| Name                                | Type                    | Default                                                    | Description                                                                                                                                                             |
+| Name | Type | Default | Description |
 | ----------------------------------- | ----------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `joint_offset_startup_wrap_enabled` | `bool` (`true`/`false`) | `false`                                                    | Once the slave sends data, wrap the first offset-compensated TPDO position sample into `[-pi, pi]` and fold the branch correction into the runtime `joint_offset`.      |
-| `csv_dump_enabled`                  | `bool` (`true`/`false`) | `false`                                                    | Enables CSV dump when set to `true`.                                                                                                                                    |
-| `csv_dump_path`                     | `string`                | `logs/log_YYYYMMDD_HHMMSS_cia402_a<alias>_p<position>.csv` | Output CSV file path.                                                                                                                                                   |
-| `csv_dump_flush_every_n`            | `uint`                  | `1`                                                        | Flush the file every N rows (minimum 1).                                                                                                                                |
+| `joint_offset_startup_wrap_enabled` | `bool` (`true`/`false`) | `false` | Once the slave sends data, wrap the first offset-compensated TPDO position sample into `[-pi, pi]` and fold the branch correction into the runtime `joint_offset`. |
+| `csv_dump_enabled` | `bool` (`true`/`false`) | `false` | Enables CSV dump when set to `true`. |
+| `csv_dump_path` | `string` | `logs/log_YYYYMMDD_HHMMSS_cia402_a<alias>_p<position>.csv` | Output CSV file path. |
+| `csv_dump_flush_every_n` | `uint` | `1` | Flush the file every N rows (minimum 1). |
 
 ### CSV columns
 

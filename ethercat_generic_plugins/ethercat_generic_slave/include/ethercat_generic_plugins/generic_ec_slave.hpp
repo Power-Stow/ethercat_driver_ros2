@@ -17,6 +17,9 @@
 #ifndef ETHERCAT_GENERIC_PLUGINS__GENERIC_EC_SLAVE_HPP_
 #define ETHERCAT_GENERIC_PLUGINS__GENERIC_EC_SLAVE_HPP_
 
+#include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <vector>
 #include <string>
 #include <unordered_map>
@@ -24,6 +27,7 @@
 #include "yaml-cpp/yaml.h"
 #include "ethercat_interface/ec_slave.hpp"
 #include "ethercat_interface/ec_pdo_channel_manager.hpp"
+#include "ethercat_interface/ec_pdo_single_interface_channel_manager.hpp"
 #include "ethercat_interface/ec_sync_manager.hpp"
 
 namespace ethercat_generic_plugins
@@ -64,6 +68,11 @@ protected:
   std::vector<unsigned int> domain_map_;
   YAML::Node slave_config_;
   uint32_t assign_activate_ = 0;
+  /// RPDO channel mapped to the `position` command interface, which holds the read position while
+  /// its command is NaN.
+  ethercat_interface::EcPdoSingleInterfaceChannelManager * position_command_channel_ = nullptr;
+  /// State interface index of the TPDO channel mapped to the `position` state interface.
+  std::optional<size_t> position_state_index_;
 
   /** set up of the drive configuration from yaml node*/
   bool setup_from_config(YAML::Node slave_config);
@@ -73,6 +82,11 @@ protected:
   void setup_syncs();
 
   void setup_interface_mapping();
+
+  /// Write the position reading to the position command channel, if its command is released.
+  /// @return false when the command is set or no position reading exists, so the channel's own
+  ///   update applies, which writes the command or else the configured default.
+  bool hold_read_position(uint8_t * domain_address);
 };
 }  // namespace ethercat_generic_plugins
 

@@ -67,8 +67,18 @@ public:
   /** Release the control word and the other command channels, so the drive can be taken back up
    *  to Operation Enabled. Called on activation: the same plugin instance is reused across a
    *  deactivate/activate cycle, and a wind-down left in place would keep commanding the drive
-   *  down forever. Also re-arms the startup fault reset, which is per activation. */
+   *  down forever. Also re-arms the startup fault reset and clears a dropout, both of which are
+   *  per activation. */
   virtual void reset_wind_down();
+
+  /** Latches a dropout when the slave leaves OP after having been in it. */
+  virtual void set_state_is_operational(bool value);
+
+  /** True once the drive has dropped out during this activation: its slave left OP, or the drive
+   *  left Operation Enabled for a de-energised state while Enable Operation was being commanded.
+   *  From then on the drive is held at Disable Voltage, so it cannot walk itself back up when it
+   *  returns, until reset_wind_down() clears the latch on the next activation. */
+  virtual bool requires_reactivation() const noexcept;
 
   /// @brief Setup CSV dumping internals from plugin parameters.
   void setup_csv_dump();
@@ -107,6 +117,11 @@ protected:
   bool startup_fault_reset_logged_ = false;
   bool auto_state_transitions_ = true;
   bool fault_reset_ = false;
+  /** See requires_reactivation(). */
+  bool dropout_latched_ = false;
+  /** The control word in the domain when this cycle's RPDO pass began, which is the one the drive
+   *  last received. */
+  uint16_t last_control_word_ = 0;
   int fault_reset_command_interface_index_ = -1;
   bool last_fault_reset_command_ = false;
   uint16_t error_code_ = 0;
@@ -148,6 +163,8 @@ protected:
 
   /** Record the error code of the fault the drive is in, if it is in one. */
   void latch_fault_error_code();
+  /** Set the dropout latch, logging why the first time. */
+  void latch_dropout(const char * reason);
   /** Write the latched error code to its state interface, when the URDF declares one. */
   void publish_last_error_code();
   /** returns device state based upon the status_word */
