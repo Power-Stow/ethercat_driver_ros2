@@ -151,6 +151,16 @@ budget, so a late wake-up or a slow update cannot turn into a success past it.
 If you ever experience a slave who won't initialize (i.e. stuck in `INIT`) and whose identity reads `0x00000000:0x00000000` in `ethercat slaves`, it is because the device has not released its EEPROM to the master — its own CPU still owns register `0x0500` — so the master cannot match it against the configured vendor and product code and never configures it.
 `ethercat rescan` usually clears that.
 
+### Startup SDO writes
+
+Every startup SDO reaches the drive twice.
+`configNetwork()` downloads it immediately, so a rejected object fails the activation with its CoE abort code.
+It is also registered with the slave configuration, so the master downloads it again in PREOP on its way to OP.
+The second download is the one that lasts.
+The master takes every slave through INIT before configuring it,
+and some drives reload their saved parameters in INIT, discarding the first download.
+The registered copy is also re-applied whenever the master reconfigures a slave, for example after it lost power.
+
 ### Startup SDO failures
 
 A failed download is reported at `ERROR` with the `errno` from the transfer and the CoE abort code.

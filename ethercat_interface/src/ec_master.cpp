@@ -23,6 +23,8 @@
 #include <sys/mman.h>
 #include <string.h>
 
+#include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <iostream>
 #include <sstream>
@@ -151,6 +153,20 @@ void EcMaster::addSlave(EcSlave * slave)
   if (slave_info.config == NULL) {
     printWarning("Add slave. Failed to get slave configuration.");
     return;
+  }
+
+  // Registered with the slave configuration so the master downloads them after taking the slave
+  // through INIT, where some drives reload their saved values and drop anything written earlier.
+  for (auto & sdo : slave->sdo_config) {
+    uint8_t buffer[8];
+    sdo.buffer_write(buffer);
+    if (ecrt_slave_config_sdo(
+        slave_info.config, sdo.index, sdo.sub_index, buffer, sdo.data_size()) < 0)
+    {
+      throw std::runtime_error(
+              "Add slave. Failed to register config SDO for slave at position " +
+              std::to_string(slave->position_) + ".");
+    }
   }
 
   // check and setup dc
