@@ -913,6 +913,7 @@ TEST_F(EcCiA402DriveTest, StartupFaultResetIsReArmedOnEveryActivation)
   EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, fault_reset_bit);
 
   // Reached Operation Enabled: from here a fault is this session's, and latches.
+  plugin_->set_state_is_operational(true);
   plugin_->status_word_ = 0x1237;
   plugin_->updateState();
   ASSERT_TRUE(plugin_->startup_fault_window_closed_);
@@ -963,8 +964,16 @@ TEST_F(EcCiA402DriveTest, StartupFaultResetLeavesAFaultRaisedDuringBringUp)
   plugin_->updateState();
   ASSERT_FALSE(plugin_->startup_fault_window_closed_);
 
-  // The drive comes up cleanly to Switch On Disabled, then faults on its way up to Operation
+  // A drive may publish Ready to Switch On already in SAFEOP and fault on its way to OP. The slave
+  // is not in OP yet, so the window stays open and that fault is cleared.
+  plugin_->status_word_ = 0x0231;
+  plugin_->updateState();
+  ASSERT_FALSE(plugin_->startup_fault_window_closed_);
+  EXPECT_EQ(plugin_->transition(STATE_FAULT, enable_operation) & fault_reset_bit, fault_reset_bit);
+
+  // The drive comes up cleanly to Switch On Disabled in OP, then faults on its way up to Operation
   // Enabled. That fault is this session's, so without auto_fault_reset it is not cleared.
+  plugin_->set_state_is_operational(true);
   plugin_->status_word_ = 0x0040;
   plugin_->updateState();
   ASSERT_TRUE(plugin_->startup_fault_window_closed_);

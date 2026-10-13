@@ -99,7 +99,7 @@ down on every cycle of the next run, and no automatic transition could take it b
 Operation Enabled.
 It also re-arms `reset_fault_on_startup` on every activation, with or without a prior wind-down,
 so a drive that comes back up in Fault is cleared the same way it is on a fresh start.
-The startup reset only covers a fault the drive comes up in: once the drive has been seen in a
+The startup reset only covers a fault the drive comes up in: once the drive has been seen in OP and in a
 non-fault state past Not Ready to Switch On, a fault is this session's,
 and it is cleared only by `auto_fault_reset` or the fault reset command interface.
 The error code of a fault the startup reset clears is logged at `WARN`, and that of any other fault at `ERROR`.

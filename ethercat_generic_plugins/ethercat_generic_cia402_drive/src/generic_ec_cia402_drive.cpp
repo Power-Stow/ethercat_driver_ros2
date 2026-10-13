@@ -192,11 +192,11 @@ void EcCiA402Drive::updateState()
   {
     latch_dropout("left Operation Enabled unasked while Enable Operation was commanded");
   }
-  // The startup window closes the first time the drive is seen in a non-fault state past Not Ready
-  // to Switch On. Until the slave is in OP its status word reads zero, which decodes to Not Ready,
-  // so a fault the drive comes up in is still inside the window; one raised after it has reached
-  // Switch On Disabled or beyond is this session's, and latches until a deliberate reset.
-  if (state_ != STATE_START && state_ != STATE_NOT_READY_TO_SWITCH_ON &&
+  // The startup window closes the first time the drive is seen in OP and in a non-fault state past
+  // Not Ready to Switch On. A fault raised after that is this session's, and latches until a
+  // deliberate reset. Some drives already publish a valid status word in SAFEOP and then fault on
+  // the SAFEOP to OP transition, so a status word seen before OP keeps the window open.
+  if (is_operational_ && state_ != STATE_START && state_ != STATE_NOT_READY_TO_SWITCH_ON &&
     state_ != STATE_UNDEFINED &&
     state_ != STATE_FAULT && state_ != STATE_FAULT_REACTION_ACTIVE)
   {
