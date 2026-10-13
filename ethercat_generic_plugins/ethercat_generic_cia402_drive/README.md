@@ -102,6 +102,7 @@ so a drive that comes back up in Fault is cleared the same way it is on a fresh 
 The startup reset only covers a fault the drive comes up in: once the drive has been seen in a
 non-fault state past Not Ready to Switch On, a fault is this session's,
 and it is cleared only by `auto_fault_reset` or the fault reset command interface.
+The error code of a fault the startup reset clears is logged at `WARN`, and that of any other fault at `ERROR`.
 A fault reset requested through that interface is only kept while the drive is in Fault or Fault
 Reaction Active, where it is consumed.
 One requested in any other state is dropped, so it cannot clear a later fault nobody asked about.

@@ -253,7 +253,21 @@ void EcCiA402Drive::latch_fault_error_code()
     fault_error_code_logged_ = false;
   }
 
-  if (!fault_error_code_logged_ && last_fault_error_code_ != 0) {
+  if (!fault_error_code_logged_ && last_fault_error_code_ != 0 && reset_fault_on_startup_ &&
+    !startup_fault_window_closed_)
+  {
+    // A fault the drive comes up in is cleared once on the way to Operation Enabled, so it is a
+    // warning. Drives with distributed clocks commonly raise a sync error here while their clock is
+    // still settling after activation.
+    RCLCPP_WARN(
+      rclcpp::get_logger("EthercatDriver"),
+      "EcCiA402Drive: drive came up in Fault with error code 0x%04x, status word 0x%04x "
+      "[slave pos: %u]. The code is latched on the last_error_code state interface.",
+      last_fault_error_code_,
+      last_fault_status_word_,
+      position_);
+    fault_error_code_logged_ = true;
+  } else if (!fault_error_code_logged_ && last_fault_error_code_ != 0) {
     RCLCPP_ERROR(
       rclcpp::get_logger("EthercatDriver"),
       "EcCiA402Drive: drive faulted with error code 0x%04x, status word 0x%04x [slave pos: %u]. "
