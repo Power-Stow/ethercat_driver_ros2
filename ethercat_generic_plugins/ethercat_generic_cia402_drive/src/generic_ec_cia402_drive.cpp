@@ -850,8 +850,8 @@ uint16_t EcCiA402Drive::transition(DeviceState state, uint16_t control_word)
         if (startup_reset && !startup_fault_reset_logged_) {
           RCLCPP_WARN(
             rclcpp::get_logger("EthercatDriver"),
-            "EcCiA402Drive: the drive came up in Fault with error code 0x%04x; "
-            "clearing it once on the way to Operation Enabled [slave pos: %u]",
+            "EcCiA402Drive: the drive came up in Fault with error code 0x%04x [slave pos: %u]; "
+            "clearing it once on the way to Operation Enabled",
             last_fault_error_code_,
             position_);
           startup_fault_reset_logged_ = true;
