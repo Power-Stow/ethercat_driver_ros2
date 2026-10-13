@@ -153,9 +153,10 @@ If you ever experience a slave who won't initialize (i.e. stuck in `INIT`) and w
 
 ### Startup SDO writes
 
-Every startup SDO reaches the drive twice.
-`configNetwork()` downloads it immediately, so a rejected object fails the activation with its CoE abort code.
-It is also registered with the slave configuration, so the master downloads it again in PREOP on its way to OP.
+`configNetwork()` downloads every startup SDO immediately and reports failures with their CoE abort codes.
+Only successful downloads are registered with the slave configuration,
+so the master downloads them again in PREOP on its way to OP.
+SDOs that can safely be ignored and should be tolerated can be set to `require_startup_sdo=false`.
 The second download is the one that lasts.
 The master takes every slave through INIT before configuring it,
 and some drives reload their saved parameters in INIT, discarding the first download.

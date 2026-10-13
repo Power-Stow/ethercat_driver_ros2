@@ -1127,7 +1127,7 @@ CallbackReturn EthercatDriver::configNetwork()
         sdo.index,
         sdo.sub_index);
       int ret = master_->configSlaveSdo(
-        ec_modules_[i]->position_,
+        ec_modules_[i].get(),
         sdo,
         &abort_code);
       if (ret) {
