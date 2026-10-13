@@ -154,13 +154,18 @@ If you ever experience a slave who won't initialize (i.e. stuck in `INIT`) and w
 ### Startup SDO writes
 
 `configNetwork()` downloads every startup SDO immediately and reports failures with their CoE abort codes.
-Only successful downloads are registered with the slave configuration,
-so the master downloads them again in PREOP on its way to OP.
 SDOs that can safely be ignored and should be tolerated can be set to `require_startup_sdo=false`.
-The second download is the one that lasts.
+
 The master takes every slave through INIT before configuring it,
-and some drives reload their saved parameters in INIT, discarding the first download.
-The registered copy is also re-applied whenever the master reconfigures a slave, for example after it lost power.
+and some drives reload their saved parameters in INIT, discarding that download.
+For such a drive, set the `replay_startup_sdo` parameter on its `<ec_module>` to `true` (default `false`).
+Its successful downloads are then registered with the slave configuration,
+so the master downloads them again in PREOP on its way to OP, and the second download is the one that lasts.
+The registered copy is also re-applied whenever the master reconfigures the slave, for example after it lost power.
+
+Replay is opt-in because it slows the bring-up.
+The master configures one slave at a time and spends several cycles on each replayed SDO,
+so at 100 Hz a slave with 75 startup SDOs takes about 4 s longer to reach SAFEOP.
 
 ### Startup SDO failures
 

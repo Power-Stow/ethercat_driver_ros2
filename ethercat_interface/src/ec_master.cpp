@@ -218,7 +218,7 @@ void EcMaster::addSlave(EcSlave * slave)
 
 int EcMaster::configSlaveSdo(
   EcSlave * slave, SdoConfigEntry sdo_config,
-  uint32_t * abort_code)
+  uint32_t * abort_code, bool replay)
 {
   if (master_ == nullptr) {
     printWarning("Config SDO. Master is not available.");
@@ -242,8 +242,8 @@ int EcMaster::configSlaveSdo(
     sdo_config.data_size(),
     abort_code
   );
-  if (ret) {
-    // Replaying a rejected SDO makes IgH abort configuration even when startup failures are optional.
+  // Replaying a rejected SDO makes IgH abort configuration even when startup failures are optional.
+  if (ret || !replay) {
     return ret;
   }
 

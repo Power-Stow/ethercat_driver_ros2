@@ -1114,6 +1114,12 @@ CallbackReturn EthercatDriver::configNetwork()
   // configure SDO
   size_t failed_sdo_count = 0;
   for (auto i = 0ul; i < ec_modules_.size(); i++) {
+    // Opt-in, because the master replays one slave at a time at the cycle rate, which adds seconds
+    // per slave to the bring-up. Only a drive that reloads its saved parameters in INIT needs it.
+    const auto replay_parameter = ec_module_parameters_[i].find("replay_startup_sdo");
+    const bool replay_startup_sdo = replay_parameter != ec_module_parameters_[i].end() &&
+      (replay_parameter->second == "true" || replay_parameter->second == "1" ||
+      replay_parameter->second == "True");
     for (auto & sdo : ec_modules_[i]->sdo_config) {
       // Only written when the drive's CoE layer aborts the transfer, so it has to start at zero for
       // a failure without a reported abort to be distinguishable.
@@ -1129,7 +1135,8 @@ CallbackReturn EthercatDriver::configNetwork()
       int ret = master_->configSlaveSdo(
         ec_modules_[i].get(),
         sdo,
-        &abort_code);
+        &abort_code,
+        replay_startup_sdo);
       if (ret) {
         ++failed_sdo_count;
         RCLCPP_ERROR(

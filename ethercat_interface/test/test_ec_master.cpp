@@ -82,9 +82,9 @@ TEST(EcMaster, replays_only_successful_startup_downloads_and_retries_on_reactiva
   EXPECT_TRUE(fake_master->config.registered_indices.empty());
 
   uint32_t abort_code = 0;
-  ASSERT_EQ(master.configSlaveSdo(&slave, slave.sdo_config.front(), &abort_code), 0);
+  ASSERT_EQ(master.configSlaveSdo(&slave, slave.sdo_config.front(), &abort_code, true), 0);
   fake_master->download_result = -EIO;
-  EXPECT_EQ(master.configSlaveSdo(&slave, slave.sdo_config.back(), &abort_code), -EIO);
+  EXPECT_EQ(master.configSlaveSdo(&slave, slave.sdo_config.back(), &abort_code, true), -EIO);
   EXPECT_EQ(fake_master->config.registered_indices, (std::vector<uint16_t>{0}));
   EXPECT_EQ(slave.sdo_config.size(), std::size_t{2});  // Two synthetic entries, one accepted and one rejected.
 
@@ -94,7 +94,10 @@ TEST(EcMaster, replays_only_successful_startup_downloads_and_retries_on_reactiva
   ethercat_interface::EcMaster reactivated_master(0);
   reactivated_master.addSlave(&slave);
   for (const auto & entry : slave.sdo_config) {
-    ASSERT_EQ(reactivated_master.configSlaveSdo(&slave, entry, &abort_code), 0);
+    ASSERT_EQ(reactivated_master.configSlaveSdo(&slave, entry, &abort_code, true), 0);
   }
+  EXPECT_EQ(fake_master->config.registered_indices, (std::vector<uint16_t>{0, 1}));
+
+  ASSERT_EQ(reactivated_master.configSlaveSdo(&slave, slave.sdo_config.front(), &abort_code, false), 0);
   EXPECT_EQ(fake_master->config.registered_indices, (std::vector<uint16_t>{0, 1}));
 }
