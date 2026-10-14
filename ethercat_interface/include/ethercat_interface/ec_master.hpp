@@ -165,7 +165,9 @@ public:
   /// Each replayed SDO costs several cycles of the slave's PREOP to SAFEOP transition.
   /// @return Zero on success, or the address resolution or download error.
   /// @throw std::runtime_error if the successful download cannot be registered for replay.
-  int configSlaveSdo(EcSlave * slave, SdoConfigEntry sdo_config, uint32_t * abort_code, bool replay);
+  int configSlaveSdo(
+    EcSlave * slave, SdoConfigEntry sdo_config, uint32_t * abort_code,
+    bool replay);
 
   /** Read one SDO from a slave and decode it as `data_type`.
    *

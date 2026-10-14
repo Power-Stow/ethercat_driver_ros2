@@ -43,19 +43,23 @@ extern "C" ec_master_t * ecrt_request_master(unsigned int)
 
 extern "C" void ecrt_release_master(ec_master_t *) {}
 
-extern "C" ec_slave_config_t * ecrt_master_slave_config(ec_master_t * master, uint16_t, uint16_t, uint32_t, uint32_t)
+extern "C" ec_slave_config_t * ecrt_master_slave_config(
+  ec_master_t * master, uint16_t, uint16_t,
+  uint32_t, uint32_t)
 {
   return &master->config;
 }
 
-extern "C" int ecrt_master_sdo_download(ec_master_t * master, uint16_t, uint16_t, uint8_t, const uint8_t *, size_t,
-                                        uint32_t *)
+extern "C" int ecrt_master_sdo_download(
+  ec_master_t * master, uint16_t, uint16_t, uint8_t, const uint8_t *, size_t,
+  uint32_t *)
 {
   return master->download_result;
 }
 
-extern "C" int ecrt_slave_config_sdo(ec_slave_config_t * config, uint16_t index, uint8_t, const uint8_t * data,
-                                     size_t size)
+extern "C" int ecrt_slave_config_sdo(
+  ec_slave_config_t * config, uint16_t index, uint8_t, const uint8_t * data,
+  size_t size)
 {
   EXPECT_EQ(size, sizeof(uint8_t));
   EXPECT_EQ(EC_READ_U8(data), 1);
@@ -86,7 +90,8 @@ TEST(EcMaster, replays_only_successful_startup_downloads_and_retries_on_reactiva
   fake_master->download_result = -EIO;
   EXPECT_EQ(master.configSlaveSdo(&slave, slave.sdo_config.back(), &abort_code, true), -EIO);
   EXPECT_EQ(fake_master->config.registered_indices, (std::vector<uint16_t>{0}));
-  EXPECT_EQ(slave.sdo_config.size(), std::size_t{2});  // Two synthetic entries, one accepted and one rejected.
+  // Two synthetic entries, one accepted and one rejected.
+  EXPECT_EQ(slave.sdo_config.size(), std::size_t{2});
 
   master.shutdown();
   fake_master->config.registered_indices.clear();
@@ -98,6 +103,7 @@ TEST(EcMaster, replays_only_successful_startup_downloads_and_retries_on_reactiva
   }
   EXPECT_EQ(fake_master->config.registered_indices, (std::vector<uint16_t>{0, 1}));
 
-  ASSERT_EQ(reactivated_master.configSlaveSdo(&slave, slave.sdo_config.front(), &abort_code, false), 0);
+  ASSERT_EQ(reactivated_master.configSlaveSdo(&slave, slave.sdo_config.front(), &abort_code, false),
+    0);
   EXPECT_EQ(fake_master->config.registered_indices, (std::vector<uint16_t>{0, 1}));
 }
