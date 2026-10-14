@@ -37,6 +37,7 @@ ethercat_interface/
 
 - `ethercat` (IgH EtherLab): the realtime EtherCAT master (`ecrt.h`, `libethercat`).
 - `rclcpp`: logging only (state-change messages).
+- `yaml_cpp_vendor` / `yaml-cpp`: configuration parsing, linked directly by the interface library.
 
 ### Build/Test Dependencies
 
@@ -48,6 +49,13 @@ ethercat_interface/
   cyclic exchange (`update()`, `readData()`, `writeData()`). It also tracks master, domain, and
   per-slave state.
 - `EcSlave`: abstract base for slave plugins (`processData`, `syncs`, `channels`, `setupSlave`).
+
+## Startup SDOs
+
+`configSlaveSdo()` takes the `EcSlave` added to the master and resolves its alias and position for the download.
+With `replay` set, only successful downloads are registered for replay after INIT and on later slave reconfiguration.
+Failed downloads return their error without entering the configuration queue,
+leaving `ethercat_driver` to apply its `require_startup_sdo` policy.
 
 ## Logging & Diagnostics
 

@@ -159,9 +159,15 @@ public:
     */
   void addSlave(EcSlave * slave);
 
-  /** \brief configure slave using SDO
-    */
-  int configSlaveSdo(uint16_t slave_position, SdoConfigEntry sdo_config, uint32_t * abort_code);
+  /// Download a startup SDO, and register it for replay when requested and the download succeeds.
+  /// @pre slave is non-null and has been added to this master.
+  /// @param replay Download the SDO again in PREOP after INIT and on every slave reconfiguration.
+  /// Each replayed SDO costs several cycles of the slave's PREOP to SAFEOP transition.
+  /// @return Zero on success, or the address resolution or download error.
+  /// @throw std::runtime_error if the successful download cannot be registered for replay.
+  int configSlaveSdo(
+    EcSlave * slave, SdoConfigEntry sdo_config, uint32_t * abort_code,
+    bool replay);
 
   /** Read one SDO from a slave and decode it as `data_type`.
    *

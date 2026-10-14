@@ -23,6 +23,8 @@
 #include <sys/mman.h>
 #include <string.h>
 
+#include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <iostream>
 #include <sstream>
@@ -215,25 +217,46 @@ void EcMaster::addSlave(EcSlave * slave)
 }
 
 int EcMaster::configSlaveSdo(
-  uint16_t slave_position, SdoConfigEntry sdo_config,
-  uint32_t * abort_code)
+  EcSlave * slave, SdoConfigEntry sdo_config,
+  uint32_t * abort_code, bool replay)
 {
   if (master_ == nullptr) {
     printWarning("Config SDO. Master is not available.");
     return -1;
   }
 
-  uint8_t buffer[8];
+  uint16_t ring_position = 0;
+  int ret = resolveRingPosition(slave->alias_, slave->position_, &ring_position);
+  if (ret) {
+    return ret;
+  }
+
+  uint8_t buffer[sizeof(uint64_t)];
   sdo_config.buffer_write(buffer);
-  int ret = ecrt_master_sdo_download(
+  ret = ecrt_master_sdo_download(
     master_,
-    slave_position,
+    ring_position,
     sdo_config.index,
     sdo_config.sub_index,
     buffer,
     sdo_config.data_size(),
     abort_code
   );
+  // Replaying a rejected SDO makes IgH abort configuration even when startup failures are optional.
+  if (ret || !replay) {
+    return ret;
+  }
+
+  // INIT can reload saved parameters, so successful downloads must be replayed in PREOP.
+  auto * config = ecrt_master_slave_config(
+    master_, slave->alias_, slave->position_, slave->vendor_id_, slave->product_id_);
+  if (config == nullptr || ecrt_slave_config_sdo(
+      config, sdo_config.index, sdo_config.sub_index, buffer, sdo_config.data_size()) < 0)
+  {
+    throw std::runtime_error(
+            "Config SDO. Failed to register config SDO for slave at position " +
+            std::to_string(slave->position_) + ".");
+  }
   return ret;
 }
 

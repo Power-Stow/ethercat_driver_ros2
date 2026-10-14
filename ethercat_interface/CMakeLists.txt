@@ -16,6 +16,8 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_ros REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(yaml_cpp_vendor REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # EtherLab
 set(ETHERLAB_LOCAL_DIR /usr/local/etherlab)
@@ -52,7 +54,7 @@ target_include_directories(
   ${ETHERCAT_INCLUDE_DIR}
 )
 
-target_link_libraries(${PROJECT_NAME} ${ETHERCAT_LIB})
+target_link_libraries(${PROJECT_NAME} ${ETHERCAT_LIB} yaml-cpp::yaml-cpp)
 
 ament_target_dependencies(
   ${PROJECT_NAME}
@@ -73,9 +75,6 @@ if(BUILD_TESTING)
   # find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
 
-  find_package(yaml_cpp_vendor REQUIRED)
-  find_package(yaml-cpp REQUIRED)
-
   ament_lint_auto_find_test_dependencies()
 
   # Test PdoChannelManager
@@ -88,6 +87,12 @@ if(BUILD_TESTING)
   target_link_libraries(test_ec_pdo_channel_manager
     ${PROJECT_NAME}
     yaml-cpp)
+
+  ament_add_gmock(test_ec_master test/test_ec_master.cpp)
+  target_include_directories(test_ec_master PRIVATE include ${ETHERCAT_INCLUDE_DIR})
+  target_link_libraries(test_ec_master ${PROJECT_NAME})
+  # Export the fake IgH functions so calls from the shared library use them without hardware.
+  target_link_options(test_ec_master PRIVATE "-Wl,--export-dynamic")
 endif()
 
 ## EXPORTS
@@ -100,5 +105,7 @@ ament_export_libraries(
 )
 ament_export_dependencies(
   rclcpp
+  yaml_cpp_vendor
+  yaml-cpp
 )
 ament_package()

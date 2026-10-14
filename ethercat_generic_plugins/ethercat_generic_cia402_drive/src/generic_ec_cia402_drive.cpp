@@ -192,11 +192,11 @@ void EcCiA402Drive::updateState()
   {
     latch_dropout("left Operation Enabled unasked while Enable Operation was commanded");
   }
-  // The startup window closes the first time the drive is seen in a non-fault state past Not Ready
-  // to Switch On. Until the slave is in OP its status word reads zero, which decodes to Not Ready,
-  // so a fault the drive comes up in is still inside the window; one raised after it has reached
-  // Switch On Disabled or beyond is this session's, and latches until a deliberate reset.
-  if (state_ != STATE_START && state_ != STATE_NOT_READY_TO_SWITCH_ON &&
+  // The startup window closes the first time the drive is seen in OP and in a non-fault state past
+  // Not Ready to Switch On. A fault raised after that is this session's, and latches until a
+  // deliberate reset. Some drives already publish a valid status word in SAFEOP and then fault on
+  // the SAFEOP to OP transition, so a status word seen before OP keeps the window open.
+  if (is_operational_ && state_ != STATE_START && state_ != STATE_NOT_READY_TO_SWITCH_ON &&
     state_ != STATE_UNDEFINED &&
     state_ != STATE_FAULT && state_ != STATE_FAULT_REACTION_ACTIVE)
   {
@@ -253,7 +253,21 @@ void EcCiA402Drive::latch_fault_error_code()
     fault_error_code_logged_ = false;
   }
 
-  if (!fault_error_code_logged_ && last_fault_error_code_ != 0) {
+  if (!fault_error_code_logged_ && last_fault_error_code_ != 0 && reset_fault_on_startup_ &&
+    !startup_fault_window_closed_)
+  {
+    // A fault the drive comes up in is cleared once on the way to Operation Enabled, so it is a
+    // warning. Drives with distributed clocks commonly raise a sync error here while their clock is
+    // still settling after activation.
+    RCLCPP_WARN(
+      rclcpp::get_logger("EthercatDriver"),
+      "EcCiA402Drive: drive came up in Fault with error code 0x%04x, status word 0x%04x "
+      "[slave pos: %u]. The code is latched on the last_error_code state interface.",
+      last_fault_error_code_,
+      last_fault_status_word_,
+      position_);
+    fault_error_code_logged_ = true;
+  } else if (!fault_error_code_logged_ && last_fault_error_code_ != 0) {
     RCLCPP_ERROR(
       rclcpp::get_logger("EthercatDriver"),
       "EcCiA402Drive: drive faulted with error code 0x%04x, status word 0x%04x [slave pos: %u]. "
@@ -836,8 +850,8 @@ uint16_t EcCiA402Drive::transition(DeviceState state, uint16_t control_word)
         if (startup_reset && !startup_fault_reset_logged_) {
           RCLCPP_WARN(
             rclcpp::get_logger("EthercatDriver"),
-            "EcCiA402Drive: the drive came up in Fault with error code 0x%04x; "
-            "clearing it once on the way to Operation Enabled [slave pos: %u]",
+            "EcCiA402Drive: the drive came up in Fault with error code 0x%04x [slave pos: %u]; "
+            "clearing it once on the way to Operation Enabled",
             last_fault_error_code_,
             position_);
           startup_fault_reset_logged_ = true;

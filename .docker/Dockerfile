@@ -12,7 +12,7 @@ RUN apt update && \
 RUN mkdir ec_dev && cd ec_dev && \
     git clone https://gitlab.com/etherlab.org/ethercat.git && \
     cd ethercat && \
-    git checkout stable-1.5 && \
+    git checkout 1.6.10 && \
     autoupdate && \
     ./bootstrap && \
     ./configure --prefix=/usr/local/etherlab --disable-kernel && \
