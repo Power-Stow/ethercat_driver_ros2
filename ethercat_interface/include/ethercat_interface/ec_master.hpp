@@ -187,6 +187,17 @@ public:
     double * value,
     uint32_t * abort_code);
 
+  /** Check that the slave the bus has at `slave`'s alias and position carries its vendor ID and
+   * product code.
+   *
+   * Needed before any SDO transfer: a transfer addresses a ring position and reaches whichever
+   * slave sits there, whereas IgH attaches a slave config only to a slave of the configured type.
+   * `found` holds the identity of the slave at that address when the return value is 0 or -ENODEV.
+   * Returns 0 on a match, -ENODEV on a mismatch, -ENOENT when no slave answers to that alias, or
+   * the master query's error.
+   */
+  int checkSlaveIdentity(const EcSlave & slave, ec_slave_info_t * found);
+
   /** call after adding all slaves, and before update */
   bool activate();
 

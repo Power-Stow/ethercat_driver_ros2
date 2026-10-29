@@ -14,6 +14,7 @@
 
 #include "ethercat_driver/ethercat_driver.hpp"
 
+#include <ecrt.h>
 #include <tinyxml2.h>
 
 #include <pthread.h>
@@ -21,6 +22,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -1108,6 +1110,46 @@ CallbackReturn EthercatDriver::configNetwork()
     validate_module_parameter_alignment(ec_modules_, ec_module_parameters_);
   } catch (const std::exception & e) {
     RCLCPP_FATAL(rclcpp::get_logger("EthercatDriver"), "%s", e.what());
+    return CallbackReturn::ERROR;
+  }
+
+  // Checked before the first SDO transfer, because a module whose slave was moved would otherwise
+  // download its startup SDOs into whichever slave took its place.
+  size_t mismatched_slave_count = 0;
+  for (auto i = 0ul; i < ec_modules_.size(); i++) {
+    ec_slave_info_t found{};
+    const int ret = master_->checkSlaveIdentity(*ec_modules_[i], &found);
+    if (ret == -ENODEV) {
+      ++mismatched_slave_count;
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"),
+        "Module '%s' at alias %u position %u expects vendor ID 0x%08x product code 0x%08x, but "
+        "the slave there is '%s' with vendor ID 0x%08x product code 0x%08x.",
+        ec_module_parameters_[i].at("name").c_str(),
+        ec_modules_[i]->alias_,
+        ec_modules_[i]->position_,
+        ec_modules_[i]->vendor_id_,
+        ec_modules_[i]->product_id_,
+        found.name,
+        found.vendor_id,
+        found.product_code);
+    } else if (ret) {
+      ++mismatched_slave_count;
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"),
+        "Module '%s' at alias %u position %u: could not read the identity of the slave there: %s.",
+        ec_module_parameters_[i].at("name").c_str(),
+        ec_modules_[i]->alias_,
+        ec_modules_[i]->position_,
+        std::strerror(ret < 0 ? -ret : ret));
+    }
+  }
+  if (mismatched_slave_count > 0) {
+    RCLCPP_FATAL(
+      rclcpp::get_logger("EthercatDriver"),
+      "%zu module(s) do not match the slave at their address; refusing to bring the bus up. Check "
+      "'ethercat slaves' against the alias and position of each <ec_module>.",
+      mismatched_slave_count);
     return CallbackReturn::ERROR;
   }
 
