@@ -151,6 +151,13 @@ budget, so a late wake-up or a slow update cannot turn into a success past it.
 If you ever experience a slave who won't initialize (i.e. stuck in `INIT`) and whose identity reads `0x00000000:0x00000000` in `ethercat slaves`, it is because the device has not released its EEPROM to the master — its own CPU still owns register `0x0500` — so the master cannot match it against the configured vendor and product code and never configures it.
 `ethercat rescan` usually clears that.
 
+### Slave identity check
+
+Before its first SDO transfer, `configNetwork()` reads the vendor ID and product code of the slave at each `<ec_module>`'s alias and position.
+If any of them differs from the module's `vendor_id` and `product_id`, or no slave answers to that address, each such module is logged at `FATAL` with the expected and found identity, and the activation is refused.
+An SDO transfer addresses a ring position, so without this check a module whose slave was moved would download its startup SDOs into whichever slave took its place.
+Two slaves of the same type that swap places pass the check.
+
 ### Startup SDO writes
 
 `configNetwork()` downloads every startup SDO immediately and reports failures with their CoE abort codes.
