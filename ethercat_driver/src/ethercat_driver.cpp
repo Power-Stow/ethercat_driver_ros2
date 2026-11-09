@@ -392,6 +392,11 @@ const char * al_status_code_to_string(uint16_t code)
   }
 }
 
+/// Default of the sync0_distance_warn_ns hardware parameter. A frame sent this close to SYNC0 is
+/// one late wake-up of the cyclic loop away from being latched in the wrong cycle on a typical
+/// PREEMPT_RT system, where wake-up latency stays well below it.
+constexpr int64_t kDefaultSync0DistanceWarnNs = 200000;
+
 /// Accepted range of the diagnostics_period_s hardware parameter, in seconds.
 constexpr double kMinDiagnosticsPeriodS = 1e-3;
 constexpr double kMaxDiagnosticsPeriodS = 3600.0;
@@ -1896,6 +1901,27 @@ void EthercatDriver::parseDiagnosticsParameters()
         "Invalid dt_tolerated_overrun (%s); using %.2f.", e.what(), dt_tolerated_overrun_);
     }
   }
+
+  sync0_distance_warn_ns_ = kDefaultSync0DistanceWarnNs;
+  it = info_.hardware_parameters.find("sync0_distance_warn_ns");
+  if (it != info_.hardware_parameters.end()) {
+    try {
+      const long long sync0_distance_warn_in = std::stoll(it->second);  // NOLINT(runtime/int)
+      if (sync0_distance_warn_in >= 0) {
+        sync0_distance_warn_ns_ = static_cast<int64_t>(sync0_distance_warn_in);
+      } else {
+        RCLCPP_WARN(
+          rclcpp::get_logger("EthercatDriver"),
+          "Invalid sync0_distance_warn_ns (%lld, must be >= 0); using %lld ns.",
+          sync0_distance_warn_in, static_cast<long long>(sync0_distance_warn_ns_));  // NOLINT
+      }
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(
+        rclcpp::get_logger("EthercatDriver"),
+        "Invalid sync0_distance_warn_ns (%s); using %lld ns.", e.what(),
+        static_cast<long long>(sync0_distance_warn_ns_));  // NOLINT(runtime/int)
+    }
+  }
 }
 
 void EthercatDriver::updateTimingStatistics()
@@ -1954,6 +1980,7 @@ void EthercatDriver::startDiagnostics()
   }
   // Only touched by the publisher thread, which is not running yet.
   timing_overrun_count_reported_ = 0;
+  sync0_slip_count_reported_ = 0;
 
   // Derive the node name and hardware ID from the hardware component name,
   // so multiple driver instances in one controller manager publish distinguishable statuses
@@ -1969,6 +1996,7 @@ void EthercatDriver::startDiagnostics()
     diagnostics_updater_->add("EtherCAT Master", this, &EthercatDriver::produceMasterDiagnostics);
     diagnostics_updater_->add(
       "EtherCAT RT Timing", this, &EthercatDriver::produceTimingDiagnostics);
+    diagnostics_updater_->add("EtherCAT SYNC0", this, &EthercatDriver::produceSync0Diagnostics);
 
     const auto module_name = [this](size_t index) -> const std::string * {
         if (index >= ec_module_parameters_.size()) {
@@ -2210,6 +2238,42 @@ void EthercatDriver::produceTimingDiagnostics(
     stat.summary(DiagnosticStatus::WARN, "Cyclic loop deadline overruns detected");
   } else {
     stat.summary(DiagnosticStatus::OK, "Cyclic loop timing nominal");
+  }
+}
+
+void EthercatDriver::produceSync0Diagnostics(
+  diagnostic_updater::DiagnosticStatusWrapper & stat)
+{
+  using diagnostic_msgs::msg::DiagnosticStatus;
+  if (!master_) {
+    stat.summary(DiagnosticStatus::ERROR, "EtherCAT master not available");
+    return;
+  }
+  const auto timing = master_->takeSync0Timing();
+  if (!timing.valid) {
+    stat.summary(DiagnosticStatus::OK, "No DC slave has reported its SYNC0 phase yet");
+    return;
+  }
+  stat.add("margin_us", static_cast<double>(timing.margin__ns) * 1e-3);
+  if (timing.window_min_distance__ns >= 0) {
+    stat.add("min_distance_us", static_cast<double>(timing.window_min_distance__ns) * 1e-3);
+  }
+  stat.add("slip_count", timing.slip_count);
+
+  // Like the overruns, judged per publication, so a single slip does not latch the status.
+  const uint64_t new_slip_count = timing.slip_count - sync0_slip_count_reported_;
+  sync0_slip_count_reported_ = timing.slip_count;
+  stat.add("slips_since_last_report", new_slip_count);
+  const bool close_to_sync0 = timing.window_min_distance__ns >= 0 &&
+    timing.window_min_distance__ns < sync0_distance_warn_ns_;
+  if (new_slip_count > 0) {
+    stat.summary(
+      DiagnosticStatus::ERROR,
+      "Frames crossed SYNC0; the slaves latched some outputs twice and skipped others");
+  } else if (close_to_sync0) {
+    stat.summary(DiagnosticStatus::WARN, "Frames sent close to SYNC0");
+  } else {
+    stat.summary(DiagnosticStatus::OK, "Frames clear of SYNC0");
   }
 }
 

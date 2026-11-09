@@ -193,6 +193,8 @@ protected:
     diagnostic_updater::DiagnosticStatusWrapper & stat, size_t slave_index);
   /** diagnostic_updater task: real-time cyclic-loop timing health. */
   void produceTimingDiagnostics(diagnostic_updater::DiagnosticStatusWrapper & stat);
+  /** diagnostic_updater task: timing of the cyclic frames relative to SYNC0. */
+  void produceSync0Diagnostics(diagnostic_updater::DiagnosticStatusWrapper & stat);
 
 protected:
   std::vector<std::shared_ptr<ethercat_interface::EcSlave>> ec_modules_;
@@ -262,6 +264,10 @@ protected:
   double diagnostics_period_s_ = 1.0;
   int32_t dc_time_diff_warn_ns_ = 10000;  // 10 us
   double dt_tolerated_overrun_ = 0.5;  // fraction of the expected period a cycle may overrun
+  /** distance of a frame's send from SYNC0 below which the SYNC0 status warns */
+  int64_t sync0_distance_warn_ns_ = 0;
+  /** slip count at the previous publication, accessed only by the diagnostics publisher thread */
+  uint64_t sync0_slip_count_reported_ = 0;
 
   rclcpp::Node::SharedPtr diagnostics_node_;
   std::unique_ptr<diagnostic_updater::Updater> diagnostics_updater_;

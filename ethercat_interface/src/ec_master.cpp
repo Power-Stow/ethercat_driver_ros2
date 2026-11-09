@@ -23,7 +23,9 @@
 #include <sys/mman.h>
 #include <string.h>
 
+#include <atomic>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <iostream>
@@ -33,6 +35,7 @@
 #include <cstring>
 #include <utility>
 
+#include "ethercat_interface/ec_diagnostics.hpp"
 #include "ethercat_interface/ec_slave.hpp"
 
 namespace ethercat_interface
@@ -117,9 +120,44 @@ uint64_t EcMaster::applicationTimeNs()
 
 void EcMaster::syncDistributedClocks()
 {
-  ecrt_master_application_time(master_, applicationTimeNs());
+  app_time_ns_ = applicationTimeNs();
+  ecrt_master_application_time(master_, app_time_ns_);
   ecrt_master_sync_reference_clock(master_);
   ecrt_master_sync_slave_clocks(master_);
+}
+
+void EcMaster::updateSync0Margin()
+{
+  if (sync0_phase_ns_ < 0) {
+    return;
+  }
+  const int64_t margin_ns = sync0_margin_ns(app_time_ns_, sync0_phase_ns_, interval_);
+  const int64_t previous_margin_ns = sync0_margin_ns_.load(std::memory_order_relaxed);
+  if (previous_margin_ns >= 0 && sync0_slipped(previous_margin_ns, margin_ns, interval_)) {
+    sync0_slip_count_.fetch_add(1, std::memory_order_relaxed);
+  }
+  sync0_margin_ns_.store(margin_ns, std::memory_order_relaxed);
+
+  const int64_t distance_ns = sync0_distance_ns(margin_ns, interval_);
+  int64_t window_min_ns = sync0_window_min_distance_ns_.load(std::memory_order_relaxed);
+  while (distance_ns < window_min_ns &&
+    !sync0_window_min_distance_ns_.compare_exchange_weak(
+      window_min_ns, distance_ns, std::memory_order_relaxed))
+  {
+  }
+}
+
+Sync0Timing EcMaster::takeSync0Timing()
+{
+  Sync0Timing timing;
+  timing.margin__ns = sync0_margin_ns_.load(std::memory_order_relaxed);
+  timing.valid = timing.margin__ns >= 0;
+  const int64_t window_min_ns = sync0_window_min_distance_ns_.exchange(
+    std::numeric_limits<int64_t>::max(), std::memory_order_relaxed);
+  timing.window_min_distance__ns =
+    (window_min_ns == std::numeric_limits<int64_t>::max()) ? -1 : window_min_ns;
+  timing.slip_count = sync0_slip_count_.load(std::memory_order_relaxed);
+  return timing;
 }
 
 void EcMaster::addSlave(uint16_t alias, uint16_t position, EcSlave * slave)
@@ -497,6 +535,8 @@ void EcMaster::update(uint32_t domain)
   // read and write process data
   for (DomainInfo::Entry & entry : domain_info->entries) {
     entry.slave->set_process_phase("update");
+    // update() runs the bring-up and wind-down loops, whose frames are not on the cyclic phase.
+    entry.slave->set_sync0_margin_ns(-1);
     for (int i = 0; i < entry.num_pdos; ++i) {
       (entry.slave)->processData(i, domain_info->domain_pd + entry.offset[i]);
     }
@@ -549,9 +589,13 @@ void EcMaster::readData(uint32_t domain)
     updateDiagnosticsSnapshot(domain);
   }
 
+  // The inputs read now came with the frame sent last, so its margin describes them.
+  const int64_t sync0_margin = sync0_margin_ns_.load(std::memory_order_relaxed);
+
   // read and write process data
   for (DomainInfo::Entry & entry : domain_info->entries) {
     entry.slave->set_process_phase("read");
+    entry.slave->set_sync0_margin_ns(sync0_margin);
     for (int i = 0; i < entry.num_pdos; ++i) {
       (entry.slave)->processData(i, domain_info->domain_pd + entry.offset[i]);
     }
@@ -584,6 +628,10 @@ void EcMaster::writeData(uint32_t domain)
   // send process data
   ecrt_domain_queue(domain_info->domain);
   ecrt_master_send(master_);
+
+  // Only the cyclic path, not update(): the bring-up loop runs on its own phase, and a margin
+  // carried over from it would count as a slip at the first cyclic frame.
+  updateSync0Margin();
 }
 
 void EcMaster::setCtrlCHandler(SIMPLECAT_EXIT_CALLBACK user_callback)
@@ -817,9 +865,11 @@ void EcMaster::createRegisterRequests()
     if (uses_dc) {
       slave.dc_time_diff_reg = ecrt_slave_config_create_reg_request(slave.config, 4);
       slave.dc_delay_reg = ecrt_slave_config_create_reg_request(slave.config, 4);
+      slave.dc_next_sync0_reg = ecrt_slave_config_create_reg_request(slave.config, 8);
     }
     if (slave.al_status_reg == nullptr ||
-      (uses_dc && (slave.dc_time_diff_reg == nullptr || slave.dc_delay_reg == nullptr)))
+      (uses_dc && (slave.dc_time_diff_reg == nullptr || slave.dc_delay_reg == nullptr ||
+      slave.dc_next_sync0_reg == nullptr)))
     {
       printWarning("Diagnostics: failed to create a register request for a slave.");
     }
@@ -875,6 +925,22 @@ void EcMaster::serviceRegisterRequests()
         slave.dc_propagation_delay_valid = true;
       } else if (state != EC_REQUEST_BUSY) {
         ecrt_reg_request_read(slave.dc_delay_reg, 0x0928, 4);
+      }
+    }
+
+    // Next SYNC0 pulse (ESC register 0x0990, 8 bytes) in the slave's system time. All DC slaves
+    // share one SYNC0 grid that stays fixed until the master is deactivated, so the first slave
+    // to answer suffices, read once. The read is only queued in OP, when cyclic operation has
+    // started and the register no longer holds a pending start time.
+    if (slave.dc_next_sync0_reg != nullptr && sync0_phase_ns_ < 0 &&
+      slave.config_state.operational)
+    {
+      const ec_request_state_t state = ecrt_reg_request_state(slave.dc_next_sync0_reg);
+      if (state == EC_REQUEST_SUCCESS) {
+        sync0_phase_ns_ = sync0_phase_ns(
+          EC_READ_U64(ecrt_reg_request_data(slave.dc_next_sync0_reg)), app_time_ns_, interval_);
+      } else if (state != EC_REQUEST_BUSY) {
+        ecrt_reg_request_read(slave.dc_next_sync0_reg, 0x0990, 8);
       }
     }
   }

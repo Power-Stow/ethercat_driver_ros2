@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <stdexcept>
@@ -250,6 +251,12 @@ public:
    *  Intended for a non-real-time publisher; safe to call concurrently with the cyclic loop. */
   MasterDiagnostics getDiagnostics() const;
 
+  /** @brief SYNC0 timing of the frames sent by writeData(), restarting the window minimum.
+   *  For a single non-real-time consumer; safe to call concurrently with the cyclic loop.
+   *  Stays invalid unless diagnostics were enabled before activate(), because the SYNC0 phase is
+   *  read back from a slave through a diagnostics register request. */
+  Sync0Timing takeSync0Timing();
+
   /** @brief Fill in the EcTransferInfo structures
   *
   * @param transfer_nets transfer nets
@@ -339,6 +346,9 @@ protected:
   /** call IgH DC sync functions from a consistent point in the cycle */
   void syncDistributedClocks();
 
+  /** record the SYNC0 margin of the frame just sent with application time app_time_ns_ */
+  void updateSync0Margin();
+
   /** monotonic application time used for IgH DC synchronization */
   static uint64_t applicationTimeNs();
 
@@ -382,6 +392,7 @@ protected:
     ec_reg_request_t * al_status_reg = NULL;    //< ESC register 0x0134 request.
     ec_reg_request_t * dc_time_diff_reg = NULL;  //< ESC register 0x092C request.
     ec_reg_request_t * dc_delay_reg = NULL;      //< ESC register 0x0928 request.
+    ec_reg_request_t * dc_next_sync0_reg = NULL;  //< ESC register 0x0990 request.
 
     uint16_t al_status_code = 0;
     bool al_status_code_valid = false;
@@ -418,6 +429,22 @@ protected:
   uint32_t interval_;
 
   int32_t dc_sync0_shift_ns_ = 0;
+
+  /** application time passed with the last frame */
+  uint64_t app_time_ns_ = 0;
+
+  /** SYNC0 phase within the cycle in application time, read back from a DC slave in OP;
+   *  -1 until read. Only touched by the cyclic thread. */
+  int64_t sync0_phase_ns_ = -1;
+
+  /** SYNC0 margin of the last frame sent by writeData(); -1 until known */
+  std::atomic<int64_t> sync0_margin_ns_{-1};
+
+  /** smallest distance to SYNC0 since the last takeSync0Timing(); max() when no frame was sent */
+  std::atomic<int64_t> sync0_window_min_distance_ns_{std::numeric_limits<int64_t>::max()};
+
+  /** cumulative pairs of consecutive frames sent on opposite sides of a SYNC0 */
+  std::atomic<uint64_t> sync0_slip_count_{0};
 
   /** Data transfers (necessary for transfer communication) */
   std::vector<EcTransferInfo> transfers_;

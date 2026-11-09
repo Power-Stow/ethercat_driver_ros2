@@ -15,7 +15,9 @@
 #ifndef ETHERCAT_INTERFACE__EC_DIAGNOSTICS_HPP_
 #define ETHERCAT_INTERFACE__EC_DIAGNOSTICS_HPP_
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <vector>
 
 namespace ethercat_interface
@@ -101,6 +103,66 @@ struct MasterDiagnostics
 
   std::vector<SlaveDiagnostics> slaves;
 };
+
+/// @brief Timing of the cyclic frames relative to the SYNC0 event of the DC slaves.
+///
+/// A DC slave latches the outputs of the last frame it received at SYNC0. The send time of a frame
+/// varies from cycle to cycle, so a frame sent close to a SYNC0, on either side of it, can be
+/// latched one cycle early or late. The distance to the nearest SYNC0 measures that risk, and a
+/// slip is the event itself.
+struct Sync0Timing
+{
+  /// False until the SYNC0 phase has been read back from a DC slave in OP and a frame was sent.
+  bool valid = false;
+  /// Time from sending the last frame to the next SYNC0, in [0, cycle).
+  int64_t margin__ns = 0;
+  /// Smallest distance between a frame's send and its nearest SYNC0 since the previous
+  /// EcMaster::takeSync0Timing(), or -1 when no frame was sent in between.
+  int64_t window_min_distance__ns = -1;
+  /// Cumulative pairs of consecutive frames sent on opposite sides of a SYNC0. Each one made the
+  /// slaves latch one frame's outputs at two SYNC0 events, or skip one frame's outputs entirely.
+  uint64_t slip_count = 0;
+};
+
+/// @brief SYNC0 phase within the cycle, from a slave's next SYNC0 time (ESC register 0x0990).
+///
+/// A slave with a 32-bit system time implements only the low half of the register, so the value
+/// is unwrapped around @p app_time_ns, which has to lie within about 2 s of it.
+/// @param next_sync0_ns Register value in the slave's system time, which IgH keeps on the
+/// application time.
+/// @param app_time_ns A recent application time.
+/// @param cycle_ns SYNC0 cycle time, greater than 0.
+/// @return Phase in [0, cycle_ns).
+inline int64_t sync0_phase_ns(uint64_t next_sync0_ns, uint64_t app_time_ns, uint32_t cycle_ns)
+{
+  const auto ahead_ns = static_cast<int32_t>(
+    static_cast<uint32_t>(next_sync0_ns) - static_cast<uint32_t>(app_time_ns));
+  const uint64_t unwrapped_ns = app_time_ns + static_cast<uint64_t>(static_cast<int64_t>(ahead_ns));
+  return static_cast<int64_t>(unwrapped_ns % cycle_ns);
+}
+
+/// @brief Time from sending a frame to the next SYNC0.
+/// @param send_time_ns Application time the frame was sent with.
+/// @param phase_ns SYNC0 phase from sync0_phase_ns().
+/// @param cycle_ns SYNC0 cycle time, greater than 0.
+/// @return Margin in [0, cycle_ns).
+inline int64_t sync0_margin_ns(uint64_t send_time_ns, int64_t phase_ns, uint32_t cycle_ns)
+{
+  const int64_t margin_ns = phase_ns - static_cast<int64_t>(send_time_ns % cycle_ns);
+  return (margin_ns < 0) ? margin_ns + static_cast<int64_t>(cycle_ns) : margin_ns;
+}
+
+/// @brief Distance from a frame's send to the nearest SYNC0, before or after it.
+inline int64_t sync0_distance_ns(int64_t margin_ns, uint32_t cycle_ns)
+{
+  return std::min(margin_ns, static_cast<int64_t>(cycle_ns) - margin_ns);
+}
+
+/// @brief True when two consecutive frames were sent on opposite sides of a SYNC0.
+inline bool sync0_slipped(int64_t previous_margin_ns, int64_t margin_ns, uint32_t cycle_ns)
+{
+  return std::abs(margin_ns - previous_margin_ns) > static_cast<int64_t>(cycle_ns / 2);
+}
 
 }  // namespace ethercat_interface
 
