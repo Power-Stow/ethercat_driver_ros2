@@ -122,8 +122,12 @@ uint64_t EcMaster::applicationTimeNs()
 
 void EcMaster::setApplicationTime(uint64_t app_time_ns)
 {
-  // Mirrors IgH, which keeps the first application time it receives as the DC reference time.
+  // IgH keeps the first application time it receives as the DC reference time, the origin of the
+  // SYNC0 grid, so moving that one moves the grid. Later calls overwrite the application time.
   if (dc_reference_time_ns_ == 0) {
+    if (dc_reference_anchor_ns_ != 0 && interval_ != 0) {
+      app_time_ns = last_cycle_start_ns(app_time_ns, dc_reference_anchor_ns_, interval_);
+    }
     dc_reference_time_ns_ = app_time_ns;
   }
   ecrt_master_application_time(master_, app_time_ns);

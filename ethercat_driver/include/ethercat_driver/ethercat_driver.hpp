@@ -177,12 +177,6 @@ protected:
   /** Parse diagnostics-related hardware parameters (publish_diagnostics, thresholds). */
   void parseDiagnosticsParameters();
 
-  /** Parse pace_read_to_dc_cycle and the cycle time it paces read() to. */
-  void parsePacingParameters();
-
-  /** Sleep until the next start of a DC cycle, see pace_read_to_dc_cycle. */
-  void waitForNextCycle();
-
   /** Start the non-real-time diagnostics publishing node/thread (after activation). */
   void startDiagnostics();
 
@@ -240,13 +234,10 @@ protected:
   std::mutex ec_mutex_;
   bool activated_;
 
-  /** Whether read() blocks until the next start of a DC cycle, pacing the controller manager. */
-  bool pace_read_ = false;
-  /** Cycle time read() is paced to, from control_frequency. */
-  uint32_t pace_period_ns_ = 0;
-  /** Origin of the cycle grid read() is paced to, in CLOCK_MONOTONIC: the DC reference time once
-   *  a master has been activated, and the first paced read() before that. 0 until either. */
-  std::atomic<uint64_t> pace_anchor_ns_{0};
+  /** Whether activation places the SYNC0 grid on the controller manager's read() calls. */
+  bool align_dc_cycle_to_read_ = false;
+  /** Time of the last read() while inactive, in CLOCK_MONOTONIC; 0 until there is one. */
+  uint64_t inactive_read_time_ns_ = 0;
 
   /** Transfer nets */
   std::vector<ethercat_interface::EcTransferNet> ec_transfer_nets_;

@@ -21,7 +21,7 @@
 namespace
 {
 
-using ethercat_interface::next_cycle_start_ns;
+using ethercat_interface::last_cycle_start_ns;
 using ethercat_interface::sync0_distance_ns;
 using ethercat_interface::sync0_margin_ns;
 using ethercat_interface::sync0_phase_error_ns;
@@ -105,18 +105,18 @@ TEST(Sync0, consecutive_frames_reach_consecutive_sync0_events_unless_they_slip)
     sync0_index(late_send_ns, phase_ns, CYCLE_NS));
 }
 
-TEST(Sync0, next_cycle_start_is_strictly_after_now_on_the_anchor_grid)
+TEST(Sync0, last_cycle_start_is_at_or_before_now_on_the_anchor_grid)
 {
   const uint64_t anchor_ns = APP_TIME_NS;
-  EXPECT_EQ(next_cycle_start_ns(anchor_ns + 2500000, anchor_ns, CYCLE_NS), anchor_ns + CYCLE_NS);
-  // A wake-up that lands exactly on a grid point waits for the next one.
   EXPECT_EQ(
-    next_cycle_start_ns(anchor_ns + 3 * CYCLE_NS, anchor_ns, CYCLE_NS), anchor_ns + 4 * CYCLE_NS);
-  // A cycle that overran from grid point 3 into cycle 5 skips 4 and 5 instead of catching up.
+    last_cycle_start_ns(anchor_ns + 3 * CYCLE_NS + 2500000, anchor_ns, CYCLE_NS),
+    anchor_ns + 3 * CYCLE_NS);
   EXPECT_EQ(
-    next_cycle_start_ns(anchor_ns + 5 * CYCLE_NS + 2500000, anchor_ns, CYCLE_NS),
-    anchor_ns + 6 * CYCLE_NS);
-  EXPECT_EQ(next_cycle_start_ns(anchor_ns - 1, anchor_ns, CYCLE_NS), anchor_ns);
+    last_cycle_start_ns(anchor_ns + 3 * CYCLE_NS, anchor_ns, CYCLE_NS), anchor_ns + 3 * CYCLE_NS);
+  // An anchor in the future still defines the grid.
+  EXPECT_EQ(
+    last_cycle_start_ns(anchor_ns - 2500000, anchor_ns, CYCLE_NS), anchor_ns - CYCLE_NS);
+  EXPECT_EQ(last_cycle_start_ns(anchor_ns - CYCLE_NS, anchor_ns, CYCLE_NS), anchor_ns - CYCLE_NS);
 }
 
 }  // namespace

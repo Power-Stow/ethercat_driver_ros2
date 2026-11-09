@@ -239,10 +239,11 @@ public:
 
   uint32_t getInterval() {return interval_;}
 
-  /** First application time passed to IgH, which IgH keeps as the DC reference time: SYNC0 fires
-   *  at this time plus whole cycles plus the SYNC0 shift. 0 until the first one is passed, which
-   *  addSlave() does for a DC slave and activate() does in any case. */
-  uint64_t dcReferenceTimeNs() const {return dc_reference_time_ns_;}
+  /** Place the SYNC0 grid on `anchor_ns + n * cycle`, a time in CLOCK_MONOTONIC: the first
+   *  application time passed to IgH, which IgH keeps as the DC reference time, is moved back to the
+   *  last point of that grid. 0, the default, leaves the grid where the first call falls. Call after
+   *  setCtrlFrequency() and before addSlave(). */
+  void setDcReferenceAnchor(uint64_t anchor_ns) {dc_reference_anchor_ns_ = anchor_ns;}
 
   virtual void readData(uint32_t domain = 0);
   virtual void writeData(uint32_t domain = 0);
@@ -348,7 +349,8 @@ protected:
   /** copy the current master/domain/slave state into the diagnostics snapshot */
   void updateDiagnosticsSnapshot(uint32_t domain);
 
-  /** pass @p app_time_ns to IgH, recording the first one as the DC reference time */
+  /** pass @p app_time_ns to IgH, moving the first one onto the DC reference anchor and recording
+   *  it as the DC reference time */
   void setApplicationTime(uint64_t app_time_ns);
 
   /** call IgH DC sync functions from a consistent point in the cycle */
@@ -449,6 +451,9 @@ protected:
 
   /** application time passed with the last frame */
   uint64_t app_time_ns_ = 0;
+
+  /** see setDcReferenceAnchor() */
+  uint64_t dc_reference_anchor_ns_ = 0;
 
   /** first application time passed to IgH, which IgH keeps as the DC reference time, the origin
    *  of the SYNC0 grid; 0 until passed */
