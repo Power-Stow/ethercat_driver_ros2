@@ -1295,7 +1295,7 @@ CallbackReturn EthercatDriver::on_activate(
     if (inactive_read_time_ns_ != 0) {
       master_->setDcReferenceAnchor(inactive_read_time_ns_);
     } else {
-      RCLCPP_WARN(
+      RCLCPP_ERROR(
         rclcpp::get_logger("EthercatDriver"),
         "align_dc_cycle_to_read is set, but read() has not been called while the component was "
         "inactive, so SYNC0 lands at a random point of the controller manager's cycle. Activate "

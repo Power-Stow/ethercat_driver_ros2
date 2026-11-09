@@ -42,7 +42,7 @@ Set on the `<hardware>` element of the `ros2_control` system.
 `dc_sync0_shift_ns` — SYNC0 shift time in nanoseconds applied to DC slaves (default `0`).
 `align_dc_cycle_to_read` — place the SYNC0 grid on the controller manager's `read()` calls, so SYNC0 fires `dc_sync0_shift_ns` after every `read()` instead of at a random point of the cycle (default `false`).
   The controller manager runs its update loop on a fixed grid and calls `read()` while the component is inactive too, so the driver records those calls and moves the first application time it passes to the master, which the master keeps as the DC reference time, onto their grid on activation.
-  It therefore needs at least one `read()` while the component is inactive, at any time since the controller manager started, before the activation; start the component inactive (`hardware_components_initial_state`) and activate it once the update loop runs. Without one, the activation logs a warning and SYNC0 lands at a random point of the cycle.
+  It therefore needs at least one `read()` while the component is inactive, at any time since the controller manager started, before the activation; start the component inactive (`hardware_components_initial_state`) and activate it once the update loop runs. Without one, the activation logs an error and SYNC0 lands at a random point of the cycle.
   Half a cycle as `dc_sync0_shift_ns` leaves the most room on both sides for the time from `read()` to the frame's send in `write()`.
 `activation_thread_priority` — SCHED_FIFO priority applied to the activation/bring-up loop only; `<= 0` (default) keeps normal scheduling.
 `activation_cpu_core` — CPU core the activation/bring-up loop is pinned to; `< 0` (default) leaves the CPU affinity unchanged.
