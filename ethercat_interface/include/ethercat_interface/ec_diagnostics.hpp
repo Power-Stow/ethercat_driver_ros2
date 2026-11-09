@@ -217,6 +217,17 @@ inline int64_t sync0_distance_ns(int64_t margin_ns, uint32_t cycle_ns)
   return std::min(margin_ns, static_cast<int64_t>(cycle_ns) - margin_ns);
 }
 
+/// @brief Start of the first cycle after @p now_ns on the grid `anchor_ns + n * cycle_ns`.
+/// @param cycle_ns Cycle time, greater than 0.
+/// @return The next grid point, or @p anchor_ns itself while it lies in the future.
+inline uint64_t next_cycle_start_ns(uint64_t now_ns, uint64_t anchor_ns, uint32_t cycle_ns)
+{
+  if (now_ns < anchor_ns) {
+    return anchor_ns;
+  }
+  return anchor_ns + ((now_ns - anchor_ns) / cycle_ns + 1) * cycle_ns;
+}
+
 /// @brief Index of the SYNC0 that latches a frame sent at @p send_time_ns, counted from time 0.
 ///
 /// Consecutive frames reach consecutive SYNC0 events. Any other step means a SYNC0 latched one

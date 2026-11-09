@@ -20,7 +20,9 @@
 #include <sched.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -393,6 +395,9 @@ const char * al_status_code_to_string(uint16_t code)
   }
 }
 
+/// Default of the control_frequency hardware parameter, in Hz.
+constexpr double kDefaultControlFrequencyHz = 100.0;
+
 /// Default of the sync0_distance_warn_ns hardware parameter. A frame sent this close to SYNC0 is
 /// one late wake-up of the cyclic loop away from being latched in the wrong cycle on a typical
 /// PREEMPT_RT system, where wake-up latency stays well below it.
@@ -568,6 +573,8 @@ CallbackReturn EthercatDriver::on_init(
 
   const std::lock_guard<std::mutex> lock(ec_mutex_);
   activated_ = false;
+  // Here rather than at activation: read() is also called, and has to pace, while inactive.
+  parsePacingParameters();
 
   // Set state vectors
   hw_joint_states_.resize(info_.joints.size());
@@ -983,8 +990,7 @@ CallbackReturn EthercatDriver::configNetwork()
 {
   // Get control frequency
   if (info_.hardware_parameters.find("control_frequency") == info_.hardware_parameters.end()) {
-    // Control frequency was not provided, default to 100 Hz
-    control_frequency_ = 100.0;
+    control_frequency_ = kDefaultControlFrequencyHz;
   } else {
     try {
       control_frequency_ = std::stod(info_.hardware_parameters["control_frequency"]);
@@ -1301,6 +1307,12 @@ CallbackReturn EthercatDriver::on_activate(
     return CallbackReturn::ERROR;
   }
   RCLCPP_INFO(rclcpp::get_logger("EthercatDriver"), "Activated EcMaster!");
+
+  // From now on read() wakes on the SYNC0 grid, so dc_sync0_shift_ns is the time from the start
+  // of every cycle to SYNC0 instead of a random value. Without a DC slave the grid stays as it was.
+  if (master_->dcReferenceTimeNs() != 0) {
+    pace_anchor_ns_.store(master_->dcReferenceTimeNs(), std::memory_order_relaxed);
+  }
 
   // Configure transfer network if transfer nets are defined
   if (!ec_transfer_nets_.empty()) {
@@ -1714,6 +1726,11 @@ hardware_interface::return_type EthercatDriver::read(
   const rclcpp::Time & /*time*/,
   const rclcpp::Duration & /*period*/)
 {
+  // Outside the lock, so a lifecycle transition is not held up for a cycle.
+  if (pace_read_) {
+    waitForNextCycle();
+  }
+
   // try to lock so we can avoid blocking the read/write loop on the lock.
   const std::unique_lock<std::mutex> lock(ec_mutex_, std::try_to_lock);
   if (lock.owns_lock() && activated_) {
@@ -1975,6 +1992,62 @@ void EthercatDriver::parseDiagnosticsParameters()
         "Invalid sync0_phase_missing_level (%s, must be warn or error); using warn.",
         it->second.c_str());
     }
+  }
+}
+
+void EthercatDriver::parsePacingParameters()
+{
+  pace_read_ = false;
+  auto it = info_.hardware_parameters.find("pace_read_to_dc_cycle");
+  if (it != info_.hardware_parameters.end()) {
+    std::string value = it->second;
+    std::transform(
+      value.begin(), value.end(), value.begin(),
+      [](unsigned char c) {return static_cast<char>(std::tolower(c));});
+    pace_read_ = (value == "true" || value == "1");
+  }
+  if (!pace_read_) {
+    return;
+  }
+
+  double control_frequency = kDefaultControlFrequencyHz;
+  it = info_.hardware_parameters.find("control_frequency");
+  if (it != info_.hardware_parameters.end()) {
+    try {
+      control_frequency = std::stod(it->second);
+    } catch (const std::exception &) {
+      // configNetwork() reports it and refuses the activation.
+      control_frequency = std::numeric_limits<double>::quiet_NaN();
+    }
+  }
+  if (!std::isfinite(control_frequency) || control_frequency <= 0.0) {
+    RCLCPP_ERROR(
+      rclcpp::get_logger("EthercatDriver"),
+      "pace_read_to_dc_cycle needs a valid control_frequency; read() is not paced.");
+    pace_read_ = false;
+    return;
+  }
+  // Computed as EcMaster::setCtrlFrequency() computes the DC cycle, so the two grids cannot drift.
+  pace_period_ns_ = static_cast<uint32_t>(1000000000.0 / control_frequency);
+}
+
+void EthercatDriver::waitForNextCycle()
+{
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  const uint64_t now_ns = ethercat_interface::EC_MONOTONIC2NANO(now);
+  uint64_t anchor_ns = pace_anchor_ns_.load(std::memory_order_relaxed);
+  if (anchor_ns == 0) {
+    anchor_ns = now_ns;
+    pace_anchor_ns_.store(anchor_ns, std::memory_order_relaxed);
+  }
+
+  const uint64_t wake_ns =
+    ethercat_interface::next_cycle_start_ns(now_ns, anchor_ns, pace_period_ns_);
+  struct timespec wake;
+  wake.tv_sec = static_cast<time_t>(wake_ns / 1000000000ULL);
+  wake.tv_nsec = static_cast<long>(wake_ns % 1000000000ULL);  // NOLINT(runtime/int)
+  while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wake, nullptr) == EINTR) {
   }
 }
 

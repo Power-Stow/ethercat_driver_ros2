@@ -122,6 +122,7 @@ uint64_t EcMaster::applicationTimeNs()
 
 void EcMaster::setApplicationTime(uint64_t app_time_ns)
 {
+  // Mirrors IgH, which keeps the first application time it receives as the DC reference time.
   if (dc_reference_time_ns_ == 0) {
     dc_reference_time_ns_ = app_time_ns;
   }

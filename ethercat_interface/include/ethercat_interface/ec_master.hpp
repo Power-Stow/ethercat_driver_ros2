@@ -239,6 +239,11 @@ public:
 
   uint32_t getInterval() {return interval_;}
 
+  /** First application time passed to IgH, which IgH keeps as the DC reference time: SYNC0 fires
+   *  at this time plus whole cycles plus the SYNC0 shift. 0 until the first one is passed, which
+   *  addSlave() does for a DC slave and activate() does in any case. */
+  uint64_t dcReferenceTimeNs() const {return dc_reference_time_ns_;}
+
   virtual void readData(uint32_t domain = 0);
   virtual void writeData(uint32_t domain = 0);
 

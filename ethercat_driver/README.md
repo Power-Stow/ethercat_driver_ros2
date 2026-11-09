@@ -40,6 +40,10 @@ Set on the `<hardware>` element of the `ros2_control` system.
 `master_id` — EtherCAT master index to request (default `0`).
 `control_frequency` — cyclic exchange rate in Hz; also the SYNC0 cycle time for DC slaves (default `100`).
 `dc_sync0_shift_ns` — SYNC0 shift time in nanoseconds applied to DC slaves (default `0`).
+`pace_read_to_dc_cycle` — make `read()` sleep until the next start of a DC cycle, so the controller manager's loop runs on the SYNC0 grid and every frame is sent a fixed time before SYNC0 (default `false`).
+  The grid starts at the DC reference time, the first application time the driver passes to the master, so `dc_sync0_shift_ns` becomes the time from the start of each cycle to SYNC0, and half a cycle leaves the most room on both sides.
+  Set it only together with the controller manager parameter `hardware_synchronization.expect_blocking_read_write: true` and on one hardware component only, because a loop that also sleeps on its own grid waits for both and can lose every other cycle.
+  `read()` keeps pacing while the component is inactive, on the last DC grid or a grid of its own, but ros2_control does not call it while the component is unconfigured or in a lifecycle transition, so the loop then runs on `hardware_synchronization.minimum_cycle_time`.
 `activation_thread_priority` — SCHED_FIFO priority applied to the activation/bring-up loop only; `<= 0` (default) keeps normal scheduling.
 `activation_cpu_core` — CPU core the activation/bring-up loop is pinned to; `< 0` (default) leaves the CPU affinity unchanged.
 `shutdown_wind_down_timeout_s` — budget in seconds for the shutdown wind-down loop (default `1.0`); `<= 0` skips the wind-down.
