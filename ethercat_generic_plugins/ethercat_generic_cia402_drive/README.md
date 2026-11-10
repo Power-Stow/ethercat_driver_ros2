@@ -175,7 +175,7 @@ boots with a position outside the URDF-configured joint bounds.
 
 - One CSV row is written per cycle (at the end of `processData()` for the plugin instance).
 - Both RPDO and TPDO channels assigned in the slave config are included.
-- Each row contains a monotonic timestamp (nanoseconds since dump start), cycle counter, phase, `is_operational`, then channel values.
+- Each row contains a monotonic timestamp (nanoseconds since dump start), cycle counter, phase, `is_operational`, `sync0_margin_ns`, then channel values.
 
 ### Parameters
 
@@ -218,7 +218,7 @@ Example column names:
   - `is_operational` is the plugin's current EtherCAT operational-state flag for that cycle (`0` or `1`).
   - `sync0_margin_ns` is the time from sending the frame whose inputs were read last to the next SYNC0 of the DC slaves, so a `read` row describes the inputs it carries.
     It is `-1` until the SYNC0 phase is known, which needs `publish_diagnostics` on the driver, and in `update` rows.
-    A jump between neighbouring cycles by more than half a cycle is a SYNC0 slip, see the driver's **EtherCAT SYNC0** diagnostics.
+    The driver's **EtherCAT SYNC0** diagnostics count the SYNC0 slips.
   - RPDO columns log the raw process-data values written to the drive after applying channel factor/offset scaling.
   - TPDO columns log process-data values reconstructed from the scaled state value (inverse of channel factor/offset).
 - Keep `csv_dump_enabled` disabled in normal operation to avoid disk I/O overhead.

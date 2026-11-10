@@ -49,7 +49,7 @@ Set on the `<hardware>` element of the `ros2_control` system.
 `diagnostics_period_s` — diagnostics publish period in seconds (default `1.0`, valid range `[0.001, 3600]`; out-of-range values fall back to the default).
 `dc_time_diff_warn_ns` — per-slave DC system-time-difference magnitude above which a `WARN` is raised (default `10000`, valid range `[0, 2147483647]`; out-of-range values fall back to the default).
 `dt_tolerated_overrun` — fraction of the expected cycle period a cycle may exceed before it counts as an overrun, i.e. the threshold is `(1 + dt_tolerated_overrun) / control_frequency` (default `0.5`; must be finite and `>= 0`, otherwise the default is used).
-`sync0_distance_warn_ns` — distance between a frame's send and the nearest SYNC0 below which the **EtherCAT SYNC0** status raises a `WARN` (default `200000`; must be `>= 0`, otherwise the default is used).
+`sync0_distance_warn_ns` — distance between a frame's send and the nearest SYNC0 below which the **EtherCAT SYNC0** status raises a `WARN` (default `200000`; must be `>= 0`, otherwise the default is used, and below half a cycle, otherwise a quarter cycle is used).
 
 ### Health diagnostics
 
@@ -69,11 +69,11 @@ Published `DiagnosticStatus` entries:
   If several modules share a configured name, the module index is appended to keep task names unique.
 - **EtherCAT RT Timing** — cyclic-loop period min/mean/max, max jitter (largest deviation from the expected period, early or late), cumulative deadline-overrun count, and overruns since the previous report.
 - **EtherCAT SYNC0** — timing of the frames sent by `write()` relative to the SYNC0 event of the DC slaves: `margin_us` from the last frame's send to the next SYNC0, `min_distance_us` from a send to its nearest SYNC0 since the previous report, and the cumulative `slip_count` and `slips_since_last_report`.
-  A slip is a pair of consecutive frames sent on opposite sides of a SYNC0, which makes the slaves latch one frame's outputs twice or skip them.
-  The SYNC0 phase is read once from the first DC slave in OP (next SYNC0 time, ESC register `0x0990`), and until then the status reports `OK` without values.
+  A slip is a frame that does not reach the SYNC0 right after the one the previous frame reached, which makes the slaves latch one frame's outputs twice or skip them, whether the frame crossed a SYNC0 or a cycle sent no frame at all.
+  The SYNC0 phase is read once from the first DC slave in OP (next SYNC0 time, ESC register `0x0990`), and until it is and a cyclic frame was sent, the status reports `OK` without values.
 
 Levels: link down, a slave offline/not-operational/not configured by the master, or a drive fault → `ERROR`;
-incomplete working counter, high DC clock drift, loop overruns since the previous report, or a frame sent closer to SYNC0 than `sync0_distance_warn_ns` → `WARN`.
+incomplete working counter, high DC clock drift, loop overruns since the previous report, a frame sent closer to SYNC0 than `sync0_distance_warn_ns`, or no cyclic frame since the previous report → `WARN`.
 A SYNC0 slip since the previous report → `ERROR`.
 A failure to set up the diagnostics node or publisher thread is logged as an error,
 diagnostics collection in the cyclic loop is disabled for that activation, and activation continues without diagnostics.

@@ -399,7 +399,7 @@ void EcCiA402Drive::dump_cycle_csv_row()
     std::chrono::duration_cast<std::chrono::nanoseconds>(now - csv_t0_).count();
 
   csv_dump_file_ << timestamp_ns << "," << csv_cycle_counter_ << "," << process_phase() << ","
-                 << is_operational_ << "," << sync0_margin_ns();
+                 << is_operational_ << "," << sync0_margin_ns_;
   for (const auto domain_idx : csv_rpdo_domain_indices_) {
     const auto channel_idx = domain_map_[domain_idx];
     const auto * channel = pdo_channels_info_[channel_idx];

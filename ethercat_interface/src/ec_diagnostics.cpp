@@ -20,5 +20,6 @@ namespace ethercat_interface
 // Out-of-line key function, so the vtable and type_info are emitted once in this library,
 // which keeps the dynamic_cast from EcSlave reliable across dynamically loaded plugins.
 Cia402DiagnosticsProvider::~Cia402DiagnosticsProvider() = default;
+Sync0MarginConsumer::~Sync0MarginConsumer() = default;
 
 }  // namespace ethercat_interface

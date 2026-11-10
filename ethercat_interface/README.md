@@ -77,6 +77,14 @@ The interface is deliberately separate from `EcSlave`, so the `EcSlave` vtable a
 existing out-of-tree slave plugins is unchanged; the master discovers it with a `dynamic_cast` once
 per slave in `addSlave()`.
 
+With diagnostics enabled, the master also measures every cyclic frame's margin to the DC slaves'
+SYNC0 event, from the next SYNC0 time it reads once from a DC slave in OP (ESC register `0x0990`),
+and hands the latest margin, the smallest distance to SYNC0 since the previous call and the slip
+count out through the thread-safe `takeSync0Timing()`.
+Slave plugins that want the margin of the frame whose inputs they read inherit from
+`Sync0MarginConsumer` and implement `setSync0Margin()`, which the master calls before every read
+and update pass. Like `Cia402DiagnosticsProvider`, it leaves the `EcSlave` layout unchanged.
+
 ## Testing
 
 ```bash

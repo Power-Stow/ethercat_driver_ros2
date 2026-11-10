@@ -1922,6 +1922,18 @@ void EthercatDriver::parseDiagnosticsParameters()
         static_cast<long long>(sync0_distance_warn_ns_));  // NOLINT(runtime/int)
     }
   }
+  // No frame lies further than half a cycle from SYNC0, so a threshold at or above that would warn
+  // on every report. control_frequency_ is validated by setCtrlFrequency() before this runs.
+  const auto half_cycle_ns = static_cast<int64_t>(0.5 * 1e9 / control_frequency_);
+  if (sync0_distance_warn_ns_ >= half_cycle_ns) {
+    RCLCPP_WARN(
+      rclcpp::get_logger("EthercatDriver"),
+      "sync0_distance_warn_ns (%lld) is not below half a cycle (%lld ns); using %lld ns.",
+      static_cast<long long>(sync0_distance_warn_ns_),  // NOLINT(runtime/int)
+      static_cast<long long>(half_cycle_ns),  // NOLINT(runtime/int)
+      static_cast<long long>(half_cycle_ns / 2));  // NOLINT(runtime/int)
+    sync0_distance_warn_ns_ = half_cycle_ns / 2;
+  }
 }
 
 void EthercatDriver::updateTimingStatistics()
@@ -2251,7 +2263,8 @@ void EthercatDriver::produceSync0Diagnostics(
   }
   const auto timing = master_->takeSync0Timing();
   if (!timing.valid) {
-    stat.summary(DiagnosticStatus::OK, "No DC slave has reported its SYNC0 phase yet");
+    // The phase is read from a DC slave in OP, and the margin needs a cyclic frame after that.
+    stat.summary(DiagnosticStatus::OK, "SYNC0 margin not measured yet");
     return;
   }
   stat.add("margin_us", static_cast<double>(timing.margin__ns) * 1e-3);
@@ -2270,6 +2283,8 @@ void EthercatDriver::produceSync0Diagnostics(
     stat.summary(
       DiagnosticStatus::ERROR,
       "Frames crossed SYNC0; the slaves latched some outputs twice and skipped others");
+  } else if (timing.window_min_distance__ns < 0) {
+    stat.summary(DiagnosticStatus::WARN, "No cyclic frame sent since the previous report");
   } else if (close_to_sync0) {
     stat.summary(DiagnosticStatus::WARN, "Frames sent close to SYNC0");
   } else {

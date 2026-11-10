@@ -23,6 +23,7 @@
 #include <sys/mman.h>
 #include <string.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <limits>
@@ -126,24 +127,35 @@ void EcMaster::syncDistributedClocks()
   ecrt_master_sync_slave_clocks(master_);
 }
 
-void EcMaster::updateSync0Margin()
+void EcMaster::updateSync0Margin(uint64_t send_time_ns)
 {
   if (sync0_phase_ns_ < 0) {
     return;
   }
-  const int64_t margin_ns = sync0_margin_ns(app_time_ns_, sync0_phase_ns_, interval_);
-  const int64_t previous_margin_ns = sync0_margin_ns_.load(std::memory_order_relaxed);
-  if (previous_margin_ns >= 0 && sync0_slipped(previous_margin_ns, margin_ns, interval_)) {
+  const int64_t margin_ns = sync0_margin_ns(send_time_ns, sync0_phase_ns_, interval_);
+  const uint64_t index = sync0_index(send_time_ns, sync0_phase_ns_, interval_);
+  if (sync0_margin_ns_.load(std::memory_order_relaxed) >= 0 && index != sync0_index_ + 1) {
     sync0_slip_count_.fetch_add(1, std::memory_order_relaxed);
   }
+  sync0_index_ = index;
   sync0_margin_ns_.store(margin_ns, std::memory_order_relaxed);
 
+  // Always written, even when the stored minimum is smaller: a compare-exchange against a stale
+  // minimum fails once takeSync0Timing() has reset the window, so the sample lands in the new one.
   const int64_t distance_ns = sync0_distance_ns(margin_ns, interval_);
   int64_t window_min_ns = sync0_window_min_distance_ns_.load(std::memory_order_relaxed);
-  while (distance_ns < window_min_ns &&
-    !sync0_window_min_distance_ns_.compare_exchange_weak(
-      window_min_ns, distance_ns, std::memory_order_relaxed))
+  while (!sync0_window_min_distance_ns_.compare_exchange_weak(
+      window_min_ns, std::min(window_min_ns, distance_ns), std::memory_order_relaxed))
   {
+  }
+}
+
+void EcMaster::passSync0Margin(int64_t margin_ns)
+{
+  for (SlaveInfo & slave : slave_info_) {
+    if (slave.sync0_margin_consumer != nullptr) {
+      slave.sync0_margin_consumer->setSync0Margin(margin_ns);
+    }
   }
 }
 
@@ -184,6 +196,7 @@ void EcMaster::addSlave(EcSlave * slave)
   slave_info.slave = slave;
   // Resolved here rather than per cycle, keeping the dynamic_cast out of the cyclic loop.
   slave_info.cia402_provider = dynamic_cast<const Cia402DiagnosticsProvider *>(slave);
+  slave_info.sync0_margin_consumer = dynamic_cast<Sync0MarginConsumer *>(slave);
   slave_info.config = ecrt_master_slave_config(
     master_,
     slave->alias_, slave->position_,
@@ -532,11 +545,12 @@ void EcMaster::update(uint32_t domain)
     updateDiagnosticsSnapshot(domain);
   }
 
+  // update() runs the bring-up and wind-down loops, whose frames are not on the cyclic phase.
+  passSync0Margin(-1);
+
   // read and write process data
   for (DomainInfo::Entry & entry : domain_info->entries) {
     entry.slave->set_process_phase("update");
-    // update() runs the bring-up and wind-down loops, whose frames are not on the cyclic phase.
-    entry.slave->set_sync0_margin_ns(-1);
     for (int i = 0; i < entry.num_pdos; ++i) {
       (entry.slave)->processData(i, domain_info->domain_pd + entry.offset[i]);
     }
@@ -590,12 +604,11 @@ void EcMaster::readData(uint32_t domain)
   }
 
   // The inputs read now came with the frame sent last, so its margin describes them.
-  const int64_t sync0_margin = sync0_margin_ns_.load(std::memory_order_relaxed);
+  passSync0Margin(sync0_margin_ns_.load(std::memory_order_relaxed));
 
   // read and write process data
   for (DomainInfo::Entry & entry : domain_info->entries) {
     entry.slave->set_process_phase("read");
-    entry.slave->set_sync0_margin_ns(sync0_margin);
     for (int i = 0; i < entry.num_pdos; ++i) {
       (entry.slave)->processData(i, domain_info->domain_pd + entry.offset[i]);
     }
@@ -630,8 +643,9 @@ void EcMaster::writeData(uint32_t domain)
   ecrt_master_send(master_);
 
   // Only the cyclic path, not update(): the bring-up loop runs on its own phase, and a margin
-  // carried over from it would count as a slip at the first cyclic frame.
-  updateSync0Margin();
+  // carried over from it would count as a slip at the first cyclic frame. Timed after the send,
+  // so a preemption between the application time sample and the send shows in the margin.
+  updateSync0Margin(applicationTimeNs());
 }
 
 void EcMaster::setCtrlCHandler(SIMPLECAT_EXIT_CALLBACK user_callback)

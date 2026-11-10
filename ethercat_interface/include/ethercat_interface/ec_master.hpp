@@ -346,8 +346,11 @@ protected:
   /** call IgH DC sync functions from a consistent point in the cycle */
   void syncDistributedClocks();
 
-  /** record the SYNC0 margin of the frame just sent with application time app_time_ns_ */
-  void updateSync0Margin();
+  /** record the SYNC0 margin of the frame sent at @p send_time_ns, in CLOCK_MONOTONIC */
+  void updateSync0Margin(uint64_t send_time_ns);
+
+  /** hand @p margin_ns to every slave that implements Sync0MarginConsumer */
+  void passSync0Margin(int64_t margin_ns);
 
   /** monotonic application time used for IgH DC synchronization */
   static uint64_t applicationTimeNs();
@@ -385,6 +388,8 @@ protected:
     EcSlave * slave = NULL;
     /** @ref slave as an optional CiA 402 diagnostics provider, resolved once in addSlave() */
     const Cia402DiagnosticsProvider * cia402_provider = NULL;
+    /** @ref slave as an optional SYNC0 margin consumer, resolved once in addSlave() */
+    Sync0MarginConsumer * sync0_margin_consumer = NULL;
     ec_slave_config_t * config = NULL;
     ec_slave_config_state_t config_state = {0, 0, 0};
 
@@ -443,8 +448,12 @@ protected:
   /** smallest distance to SYNC0 since the last takeSync0Timing(); max() when no frame was sent */
   std::atomic<int64_t> sync0_window_min_distance_ns_{std::numeric_limits<int64_t>::max()};
 
-  /** cumulative pairs of consecutive frames sent on opposite sides of a SYNC0 */
+  /** cumulative frames that did not reach the SYNC0 after the previous frame's, see Sync0Timing */
   std::atomic<uint64_t> sync0_slip_count_{0};
+
+  /** SYNC0 index of the last frame sent by writeData(), valid once sync0_margin_ns_ is.
+   *  Only touched by the cyclic thread. */
+  uint64_t sync0_index_ = 0;
 
   /** Data transfers (necessary for transfer communication) */
   std::vector<EcTransferInfo> transfers_;

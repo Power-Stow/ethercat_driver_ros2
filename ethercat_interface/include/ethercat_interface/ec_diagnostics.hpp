@@ -17,7 +17,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstdlib>
 #include <vector>
 
 namespace ethercat_interface
@@ -52,6 +51,24 @@ public:
   ///
   /// Called from the cyclic (real-time) loop, so implementations must not allocate or block.
   virtual Cia402Diagnostics cia402Diagnostics() const = 0;
+};
+
+/// @brief Optional interface a slave plugin implements to receive the SYNC0 margin of its frames.
+///
+/// Kept separate from EcSlave for the same reason as Cia402DiagnosticsProvider: the EcSlave
+/// layout, and hence the ABI of existing out-of-tree slave plugins, stays unchanged. The master
+/// discovers it once per slave with a dynamic_cast when the slave is added.
+class Sync0MarginConsumer
+{
+public:
+  virtual ~Sync0MarginConsumer();
+
+  /// @brief Take the time from sending the frame whose inputs are read next to the following SYNC0,
+  /// in ns, or -1 while it is unknown, which includes the bring-up and wind-down passes.
+  ///
+  /// Called from the cyclic (real-time) loop before every read and update pass, so implementations
+  /// must not allocate or block.
+  virtual void setSync0Margin(int64_t margin_ns) = 0;
 };
 
 /// @brief Health snapshot for a single EtherCAT slave.
@@ -119,8 +136,9 @@ struct Sync0Timing
   /// Smallest distance between a frame's send and its nearest SYNC0 since the previous
   /// EcMaster::takeSync0Timing(), or -1 when no frame was sent in between.
   int64_t window_min_distance__ns = -1;
-  /// Cumulative pairs of consecutive frames sent on opposite sides of a SYNC0. Each one made the
-  /// slaves latch one frame's outputs at two SYNC0 events, or skip one frame's outputs entirely.
+  /// Cumulative frames that did not reach the SYNC0 right after the one the previous frame reached.
+  /// Each one made the slaves latch one frame's outputs at two SYNC0 events, or skip one frame's
+  /// outputs entirely, whether the frame crossed a SYNC0 or a cycle sent no frame at all.
   uint64_t slip_count = 0;
 };
 
@@ -142,7 +160,7 @@ inline int64_t sync0_phase_ns(uint64_t next_sync0_ns, uint64_t app_time_ns, uint
 }
 
 /// @brief Time from sending a frame to the next SYNC0.
-/// @param send_time_ns Application time the frame was sent with.
+/// @param send_time_ns Time the frame was sent, in CLOCK_MONOTONIC like the application time.
 /// @param phase_ns SYNC0 phase from sync0_phase_ns().
 /// @param cycle_ns SYNC0 cycle time, greater than 0.
 /// @return Margin in [0, cycle_ns).
@@ -158,10 +176,15 @@ inline int64_t sync0_distance_ns(int64_t margin_ns, uint32_t cycle_ns)
   return std::min(margin_ns, static_cast<int64_t>(cycle_ns) - margin_ns);
 }
 
-/// @brief True when two consecutive frames were sent on opposite sides of a SYNC0.
-inline bool sync0_slipped(int64_t previous_margin_ns, int64_t margin_ns, uint32_t cycle_ns)
+/// @brief Index of the SYNC0 that latches a frame sent at @p send_time_ns, counted from time 0.
+///
+/// Consecutive frames reach consecutive SYNC0 events. Any other step means a SYNC0 latched one
+/// frame twice or a frame was never latched, which a margin alone cannot tell after a cycle that
+/// sent no frame.
+inline uint64_t sync0_index(uint64_t send_time_ns, int64_t phase_ns, uint32_t cycle_ns)
 {
-  return std::abs(margin_ns - previous_margin_ns) > static_cast<int64_t>(cycle_ns / 2);
+  const int64_t margin_ns = sync0_margin_ns(send_time_ns, phase_ns, cycle_ns);
+  return (send_time_ns + static_cast<uint64_t>(margin_ns)) / cycle_ns;
 }
 
 }  // namespace ethercat_interface

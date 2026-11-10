@@ -24,7 +24,7 @@ namespace
 using ethercat_interface::sync0_distance_ns;
 using ethercat_interface::sync0_margin_ns;
 using ethercat_interface::sync0_phase_ns;
-using ethercat_interface::sync0_slipped;
+using ethercat_interface::sync0_index;
 
 constexpr uint32_t CYCLE_NS = 10000000;  // 10 ms
 
@@ -61,12 +61,35 @@ TEST(Sync0, distance_is_to_the_nearest_sync0)
   EXPECT_EQ(sync0_distance_ns(9900000, CYCLE_NS), 100000);
 }
 
-TEST(Sync0, slip_only_when_consecutive_frames_straddle_sync0)
+TEST(Sync0, phase_from_a_32_bit_system_time_across_its_wrap)
 {
-  EXPECT_FALSE(sync0_slipped(200000, 400000, CYCLE_NS));
-  EXPECT_FALSE(sync0_slipped(4800000, 5200000, CYCLE_NS));
-  EXPECT_TRUE(sync0_slipped(200000, 9900000, CYCLE_NS));
-  EXPECT_TRUE(sync0_slipped(9900000, 100000, CYCLE_NS));
+  // The low half of the application time is just below 2^32, and the next SYNC0's is just past it.
+  const uint64_t app_time_ns = (1ULL << 40) - 1000;
+  const uint64_t next_sync0_ns = app_time_ns + 3250000;
+  EXPECT_EQ(
+    sync0_phase_ns(next_sync0_ns & 0xFFFFFFFFULL, app_time_ns, CYCLE_NS),
+    static_cast<int64_t>(next_sync0_ns % CYCLE_NS));
+}
+
+TEST(Sync0, consecutive_frames_reach_consecutive_sync0_events_unless_they_slip)
+{
+  const int64_t phase_ns = 3000000;
+  const uint64_t sync0_ns = 1234567ULL * CYCLE_NS + 3000000;  // a SYNC0 at that phase
+  const uint64_t send_ns = sync0_ns - 100000;  // 100 us before it
+  const uint64_t index = sync0_index(send_ns, phase_ns, CYCLE_NS);
+
+  // Jitter that stays on the same side of SYNC0.
+  EXPECT_EQ(sync0_index(send_ns + CYCLE_NS + 50000, phase_ns, CYCLE_NS), index + 1);
+  // Sent 300 us late, past the next SYNC0, so that SYNC0 latches the previous frame again.
+  EXPECT_EQ(sync0_index(send_ns + CYCLE_NS + 300000, phase_ns, CYCLE_NS), index + 2);
+  // A cycle that sent no frame, with the margin back where it was.
+  EXPECT_EQ(sync0_index(send_ns + 2 * CYCLE_NS, phase_ns, CYCLE_NS), index + 2);
+  // A frame sent just after a SYNC0, then one sent 300 us early, before the next SYNC0: both reach
+  // the same SYNC0, so the first one's outputs are never latched.
+  const uint64_t late_send_ns = sync0_ns + 100000;
+  EXPECT_EQ(
+    sync0_index(late_send_ns + CYCLE_NS - 300000, phase_ns, CYCLE_NS),
+    sync0_index(late_send_ns, phase_ns, CYCLE_NS));
 }
 
 }  // namespace

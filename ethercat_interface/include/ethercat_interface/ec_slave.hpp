@@ -16,7 +16,6 @@
 #define ETHERCAT_INTERFACE__EC_SLAVE_HPP_
 
 #include <ecrt.h>
-#include <cstdint>
 #include <map>
 #include <vector>
 #include <unordered_map>
@@ -49,10 +48,6 @@ public:
   virtual void processData(size_t /*entry_idx*/, uint8_t * /*domain_address*/) {}
   virtual void set_process_phase(const std::string & phase) {current_process_phase_ = phase;}
   virtual const std::string & process_phase() const {return current_process_phase_;}
-  /** Time from sending the frame whose inputs were read last to the next SYNC0, in ns, or -1
-   *  while unknown. Set by the master before every read; see EcMaster::takeSync0Timing(). */
-  void set_sync0_margin_ns(int64_t margin_ns) {sync0_margin_ns_ = margin_ns;}
-  int64_t sync0_margin_ns() const {return sync0_margin_ns_;}
   /** a pointer to syncs. return &syncs[0] */
   virtual const ec_sync_info_t * syncs() {return NULL;}
   virtual bool initialized() {return true;}
@@ -137,7 +132,6 @@ protected:
   std::vector<double> * command_interface_ptr_;
   std::unordered_map<std::string, std::string> parameters_;
   std::string current_process_phase_ = "unknown";
-  int64_t sync0_margin_ns_ = -1;
   bool is_operational_ = false;
   bool is_alias_and_position_set_ = false;
 };
