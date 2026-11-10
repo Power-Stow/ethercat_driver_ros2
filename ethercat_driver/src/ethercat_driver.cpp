@@ -1262,7 +1262,7 @@ CallbackReturn EthercatDriver::on_activate(
   }
   // The controllers stopped at the last deactivation released their commands to the positions read
   // then, and the axes may have moved since, not least while a drive that dropped out was off.
-  reset_motion_commands();
+  reset_commands();
 
   // setup master
   if (setupMaster() != CallbackReturn::SUCCESS) {
@@ -1502,7 +1502,7 @@ std::string EthercatDriver::module_description(size_t module_index) const
          " position " + std::to_string(ec_modules_[module_index]->position_) + ")";
 }
 
-void EthercatDriver::reset_motion_commands()
+void EthercatDriver::reset_commands()
 {
   for (size_t j = 0; j < info_.joints.size(); j++) {
     for (size_t i = 0; i < info_.joints[j].command_interfaces.size(); i++) {
@@ -1519,6 +1519,14 @@ void EthercatDriver::reset_motion_commands()
         raw_joint_commands_[j][i] = 0.0;
       }
     }
+  }
+  // A NaN makes a channel write its configured default instead of resuming the command of the
+  // previous activation, and a channel without one keeps its last value.
+  for (auto & commands : hw_sensor_commands_) {
+    std::fill(commands.begin(), commands.end(), std::numeric_limits<double>::quiet_NaN());
+  }
+  for (auto & commands : hw_gpio_commands_) {
+    std::fill(commands.begin(), commands.end(), std::numeric_limits<double>::quiet_NaN());
   }
 }
 
@@ -1641,8 +1649,24 @@ hardware_interface::return_type EthercatDriver::perform_command_mode_switch(
   // next cycle reaches the bus, and preempting that would overwrite its first command.
   for (const auto & interface_name : stop_interfaces) {
     release_joint_command(interface_name);
+    release_gpio_command(interface_name);
   }
   return hardware_interface::return_type::OK;
+}
+
+void EthercatDriver::release_gpio_command(const std::string & interface_name)
+{
+  for (size_t g = 0; g < info_.gpios.size(); g++) {
+    for (size_t i = 0; i < info_.gpios[g].command_interfaces.size(); i++) {
+      if (interface_name == info_.gpios[g].name + "/" + info_.gpios[g].command_interfaces[i].name) {
+        hw_gpio_commands_[g][i] = std::numeric_limits<double>::quiet_NaN();
+        RCLCPP_INFO(
+          rclcpp::get_logger("EthercatDriver"),
+          "Released GPIO command interface '%s' to NaN.", interface_name.c_str());
+        return;
+      }
+    }
+  }
 }
 
 double EthercatDriver::joint_position_state(size_t joint_index) const

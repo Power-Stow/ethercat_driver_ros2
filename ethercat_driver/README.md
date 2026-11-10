@@ -197,7 +197,12 @@ Position is held at the joint's last read position, rather than set to NaN,
 because a NaN makes a channel write its configured default,
 and only the CiA-402 plugin keeps that default at the last read position.
 A joint with no position reading keeps its last command.
+A GPIO command interface is set to NaN, so its channel writes its configured default,
+or keeps its last value when it has none.
 The control word, the mode of operation and the fault reset are left as they are.
+
+`on_activate()` sets every position, sensor and GPIO command to NaN and every velocity and effort command to zero,
+so a re-activation, such as the recovery from a drive dropout, does not resume the commands of the previous one.
 
 ### Shutdown wind-down
 
