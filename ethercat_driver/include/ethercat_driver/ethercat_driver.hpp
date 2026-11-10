@@ -91,8 +91,9 @@ public:
    *
    * Position interfaces are released to NaN, which the channel managers turn into the configured default,
    * and for a CiA-402 position channel that default is the last read position, so the drive holds where
-   * it is. Velocity and effort are released to zero. Anything else is left alone, since only the
-   * interfaces that move an axis are unsafe to leave stale.
+   * it is. Velocity and effort are released to zero. GPIO command interfaces are released to NaN, so a
+   * channel writes its configured default, or keeps its last value when it has none. Anything else is
+   * left alone.
    */
   hardware_interface::return_type perform_command_mode_switch(
     const std::vector<std::string> & start_interfaces,
@@ -254,12 +255,16 @@ protected:
   /// motion.
   void release_joint_command(const std::string & interface_name);
 
+  /// Release one GPIO command interface, named "<gpio>/<interface>", to NaN, so its channel writes
+  /// its configured default, or keeps its last value when it has none.
+  void release_gpio_command(const std::string & interface_name);
+
   /// The joint's last read position state, or NaN when it has no position state interface.
   double joint_position_state(size_t joint_index) const;
 
-  /// Set every position command to NaN, which holds each drive where it is found, and every
-  /// velocity and effort command to zero.
-  void reset_motion_commands();
+  /// Set every position command to NaN, which holds each drive where it is found, every velocity
+  /// and effort command to zero, and every sensor and GPIO command to NaN.
+  void reset_commands();
 
   /// "<name> (alias <alias> position <position>)" for the module at @p module_index.
   std::string module_description(size_t module_index) const;
