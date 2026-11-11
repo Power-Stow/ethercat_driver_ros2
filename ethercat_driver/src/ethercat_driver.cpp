@@ -396,15 +396,15 @@ const char * al_status_code_to_string(uint16_t code)
 /// Default of the sync0_distance_warn_ns hardware parameter. A frame sent this close to SYNC0 is
 /// one late wake-up of the cyclic loop away from being latched in the wrong cycle on a typical
 /// PREEMPT_RT system, where wake-up latency stays well below it.
-constexpr int64_t kDefaultSync0DistanceWarnNs = 200000;
+constexpr int64_t DEFAULT_SYNC0_DISTANCE_WARN_NS = 200000;
 
 /// Default of the sync0_phase_timeout_s hardware parameter. The SYNC0 phase is read through a
 /// register request, which completes within a few cycles of a DC slave reaching OP.
-constexpr double kDefaultSync0PhaseTimeoutS = 5.0;
+constexpr double DEFAULT_SYNC0_PHASE_TIMEOUT_S = 5.0;
 
 /// Accepted range of the diagnostics_period_s hardware parameter, in seconds.
-constexpr double kMinDiagnosticsPeriodS = 1e-3;
-constexpr double kMaxDiagnosticsPeriodS = 3600.0;
+constexpr double MIN_DIAGNOSTICS_PERIOD_S = 1e-3;
+constexpr double MAX_DIAGNOSTICS_PERIOD_S = 3600.0;
 
 /// Build a valid ROS node name from @p prefix and a hardware component name, preserving uniqueness.
 ///
@@ -1844,15 +1844,15 @@ void EthercatDriver::parseDiagnosticsParameters()
       // Bounded so the steady-clock conversion in startDiagnostics() neither truncates to zero
       // (which would publish in a busy loop) nor overflows; NaN fails the comparison as well.
       const auto diagnostics_period_in = std::stod(it->second);
-      if (diagnostics_period_in >= kMinDiagnosticsPeriodS &&
-        diagnostics_period_in <= kMaxDiagnosticsPeriodS)
+      if (diagnostics_period_in >= MIN_DIAGNOSTICS_PERIOD_S &&
+        diagnostics_period_in <= MAX_DIAGNOSTICS_PERIOD_S)
       {
         diagnostics_period_s_ = diagnostics_period_in;
       } else {
         RCLCPP_WARN(
           rclcpp::get_logger("EthercatDriver"),
           "Invalid diagnostics_period_s (%f, must be in [%.3f, %.0f]); using %.2f s.",
-          diagnostics_period_in, kMinDiagnosticsPeriodS, kMaxDiagnosticsPeriodS,
+          diagnostics_period_in, MIN_DIAGNOSTICS_PERIOD_S, MAX_DIAGNOSTICS_PERIOD_S,
           diagnostics_period_s_);
       }
     } catch (const std::exception & e) {
@@ -1907,7 +1907,7 @@ void EthercatDriver::parseDiagnosticsParameters()
     }
   }
 
-  sync0_distance_warn_ns_ = kDefaultSync0DistanceWarnNs;
+  sync0_distance_warn_ns_ = DEFAULT_SYNC0_DISTANCE_WARN_NS;
   it = info_.hardware_parameters.find("sync0_distance_warn_ns");
   if (it != info_.hardware_parameters.end()) {
     try {
@@ -1940,7 +1940,7 @@ void EthercatDriver::parseDiagnosticsParameters()
     sync0_distance_warn_ns_ = half_cycle_ns / 2;
   }
 
-  sync0_phase_timeout_s_ = kDefaultSync0PhaseTimeoutS;
+  sync0_phase_timeout_s_ = DEFAULT_SYNC0_PHASE_TIMEOUT_S;
   it = info_.hardware_parameters.find("sync0_phase_timeout_s");
   if (it != info_.hardware_parameters.end()) {
     try {
@@ -2221,10 +2221,10 @@ void EthercatDriver::produceSlaveDiagnostics(
       s.al_status_code, al_status_code_to_string(s.al_status_code));
   }
   if (s.dc_system_time_diff_valid) {
-    stat.add("dc_system_time_diff_ns", s.dc_system_time_diff__ns);
+    stat.add("dc_system_time_diff_ns", s.dc_system_time_diff_ns);
   }
   if (s.dc_propagation_delay_valid) {
-    stat.add("dc_propagation_delay_ns", s.dc_propagation_delay__ns);
+    stat.add("dc_propagation_delay_ns", s.dc_propagation_delay_ns);
   }
   if (s.has_cia402) {
     stat.add("cia402_state", std::string(s.cia402.device_state_label));
@@ -2232,7 +2232,7 @@ void EthercatDriver::produceSlaveDiagnostics(
   }
 
   const bool dc_drift_high = s.dc_system_time_diff_valid &&
-    std::abs(s.dc_system_time_diff__ns) > dc_time_diff_warn_ns_;
+    std::abs(s.dc_system_time_diff_ns) > dc_time_diff_warn_ns_;
   if (!s.online) {
     stat.summary(DiagnosticStatus::ERROR, "Slave offline");
   } else if (!s.operational) {
@@ -2308,17 +2308,17 @@ void EthercatDriver::produceSync0Diagnostics(
       rclcpp::get_logger("EthercatDriver"),
       "SYNC0 phase read back from a DC slave lies %.1f us from the configured one, "
       "the DC reference time plus dc_sync0_shift_ns.",
-      static_cast<double>(timing.phase_error__ns) * 1e-3);
+      static_cast<double>(timing.phase_error_ns) * 1e-3);
   }
   if (!timing.valid) {
     if (!timing.uses_sync0) {
       stat.summary(DiagnosticStatus::OK, "No slave uses SYNC0");
       return;
     }
-    if (timing.phase_wait__ns >= 0) {
-      stat.add("phase_wait_s", static_cast<double>(timing.phase_wait__ns) * 1e-9);
+    if (timing.phase_wait_ns >= 0) {
+      stat.add("phase_wait_s", static_cast<double>(timing.phase_wait_ns) * 1e-9);
     }
-    if (static_cast<double>(timing.phase_wait__ns) * 1e-9 > sync0_phase_timeout_s_) {
+    if (static_cast<double>(timing.phase_wait_ns) * 1e-9 > sync0_phase_timeout_s_) {
       stat.summary(
         sync0_phase_missing_level_, "SYNC0 phase not read back from a DC slave in OP");
       return;
@@ -2327,10 +2327,10 @@ void EthercatDriver::produceSync0Diagnostics(
     stat.summary(DiagnosticStatus::OK, "SYNC0 margin not measured yet");
     return;
   }
-  stat.add("margin_us", static_cast<double>(timing.margin__ns) * 1e-3);
-  stat.add("phase_error_us", static_cast<double>(timing.phase_error__ns) * 1e-3);
-  if (timing.window_min_distance__ns >= 0) {
-    stat.add("min_distance_us", static_cast<double>(timing.window_min_distance__ns) * 1e-3);
+  stat.add("margin_us", static_cast<double>(timing.margin_ns) * 1e-3);
+  stat.add("phase_error_us", static_cast<double>(timing.phase_error_ns) * 1e-3);
+  if (timing.window_min_distance_ns >= 0) {
+    stat.add("min_distance_us", static_cast<double>(timing.window_min_distance_ns) * 1e-3);
   }
   stat.add("slip_count", timing.slip_count);
 
@@ -2338,13 +2338,13 @@ void EthercatDriver::produceSync0Diagnostics(
   const uint64_t new_slip_count = timing.slip_count - sync0_slip_count_reported_;
   sync0_slip_count_reported_ = timing.slip_count;
   stat.add("slips_since_last_report", new_slip_count);
-  const bool close_to_sync0 = timing.window_min_distance__ns >= 0 &&
-    timing.window_min_distance__ns < sync0_distance_warn_ns_;
+  const bool close_to_sync0 = timing.window_min_distance_ns >= 0 &&
+    timing.window_min_distance_ns < sync0_distance_warn_ns_;
   if (new_slip_count > 0) {
     stat.summary(
       DiagnosticStatus::ERROR,
       "Frames crossed SYNC0; the slaves latched some outputs twice and skipped others");
-  } else if (timing.window_min_distance__ns < 0) {
+  } else if (timing.window_min_distance_ns < 0) {
     stat.summary(DiagnosticStatus::WARN, "No cyclic frame sent since the previous report");
   } else if (close_to_sync0) {
     stat.summary(DiagnosticStatus::WARN, "Frames sent close to SYNC0");

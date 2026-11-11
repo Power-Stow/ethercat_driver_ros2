@@ -105,10 +105,10 @@ struct SlaveDiagnostics
   uint16_t al_status_code = 0;       //< ESC register 0x0134: reason a slave left OP.
   bool al_status_code_valid = false;
 
-  int32_t dc_system_time_diff__ns = 0;   //< ESC register 0x092C: system-time difference (signed).
+  int32_t dc_system_time_diff_ns = 0;   //< ESC register 0x092C: system-time difference (signed).
   bool dc_system_time_diff_valid = false;
 
-  uint32_t dc_propagation_delay__ns = 0;  //< ESC register 0x0928: system-time transmission delay.
+  uint32_t dc_propagation_delay_ns = 0;  //< ESC register 0x0928: system-time transmission delay.
   bool dc_propagation_delay_valid = false;
 
   bool has_cia402 = false;       //< True when @ref cia402 is populated (drive slaves).
@@ -151,10 +151,10 @@ struct Sync0Timing
   /// False until the SYNC0 phase has been read back from a DC slave in OP and a frame was sent.
   bool valid = false;
   /// Time from sending the last frame to the next SYNC0, in [0, cycle).
-  int64_t margin__ns = 0;
+  int64_t margin_ns = 0;
   /// Smallest distance between a frame's send and its nearest SYNC0 since the previous
   /// EcMaster::takeSync0Timing(), or -1 when no frame was sent in between.
-  int64_t window_min_distance__ns = -1;
+  int64_t window_min_distance_ns = -1;
   /// Cumulative frames that did not reach the SYNC0 right after the one the previous frame reached.
   /// Each one made the slaves latch one frame's outputs at two SYNC0 events, or skip one frame's
   /// outputs entirely, whether the frame crossed a SYNC0 or a cycle sent no frame at all.
@@ -163,11 +163,11 @@ struct Sync0Timing
   bool uses_sync0 = false;
   /// Time since a DC slave reached OP while the SYNC0 phase has not been read back yet, or -1 when
   /// it has been read or no DC slave reached OP.
-  int64_t phase_wait__ns = -1;
+  int64_t phase_wait_ns = -1;
   /// False until the SYNC0 phase has been read back.
   bool phase_error_valid = false;
   /// SYNC0 phase read back minus the phase IgH configured, see sync0_phase_error_ns().
-  int64_t phase_error__ns = 0;
+  int64_t phase_error_ns = 0;
 };
 
 /// @brief SYNC0 phase within the cycle, from a slave's next SYNC0 time (ESC register 0x0990).

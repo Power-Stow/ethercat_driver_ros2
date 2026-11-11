@@ -178,25 +178,25 @@ Sync0Timing EcMaster::takeSync0Timing()
 {
   std::unique_lock<std::mutex> lock = lock_without_waiting(sync0_mutex_);
   Sync0Timing timing;
-  timing.margin__ns = sync0_published_margin_ns_;
+  timing.margin_ns = sync0_published_margin_ns_;
   timing.slip_count = sync0_published_slip_count_;
   const int64_t window_min_ns = sync0_published_min_distance_ns_;
   sync0_published_min_distance_ns_ = std::numeric_limits<int64_t>::max();
   lock.unlock();
 
-  timing.valid = timing.margin__ns >= 0;
-  timing.window_min_distance__ns =
+  timing.valid = timing.margin_ns >= 0;
+  timing.window_min_distance_ns =
     (window_min_ns == std::numeric_limits<int64_t>::max()) ? -1 : window_min_ns;
   timing.uses_sync0 = uses_sync0_;
   const int64_t phase_error_ns = sync0_phase_error_ns_.load(std::memory_order_relaxed);
   timing.phase_error_valid = phase_error_ns != std::numeric_limits<int64_t>::min();
   if (timing.phase_error_valid) {
-    timing.phase_error__ns = phase_error_ns;
+    timing.phase_error_ns = phase_error_ns;
   } else {
     const uint64_t operational_since_ns =
       sync0_operational_since_ns_.load(std::memory_order_relaxed);
     if (operational_since_ns != 0) {
-      timing.phase_wait__ns = static_cast<int64_t>(applicationTimeNs() - operational_since_ns);
+      timing.phase_wait_ns = static_cast<int64_t>(applicationTimeNs() - operational_since_ns);
     }
   }
   return timing;
@@ -1033,9 +1033,9 @@ void EcMaster::updateDiagnosticsSnapshot(uint32_t domain)
     sd.operational = slave.config_state.operational != 0;
     sd.al_status_code = slave.al_status_code;
     sd.al_status_code_valid = slave.al_status_code_valid;
-    sd.dc_system_time_diff__ns = slave.dc_system_time_diff_ns;
+    sd.dc_system_time_diff_ns = slave.dc_system_time_diff_ns;
     sd.dc_system_time_diff_valid = slave.dc_system_time_diff_valid;
-    sd.dc_propagation_delay__ns = slave.dc_propagation_delay_ns;
+    sd.dc_propagation_delay_ns = slave.dc_propagation_delay_ns;
     sd.dc_propagation_delay_valid = slave.dc_propagation_delay_valid;
     sd.has_cia402 = slave.cia402_provider != nullptr;
     if (sd.has_cia402) {

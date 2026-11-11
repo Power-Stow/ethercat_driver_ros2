@@ -284,14 +284,14 @@ TEST(EcMaster, reads_the_sync0_phase_once_a_dc_slave_is_in_op_and_retries_a_fail
   EXPECT_EQ(request.reads, 0);
   auto timing = master.takeSync0Timing();
   EXPECT_TRUE(timing.uses_sync0);
-  EXPECT_EQ(timing.phase_wait__ns, -1);
+  EXPECT_EQ(timing.phase_wait_ns, -1);
 
   fake_master->config.state.operational = 1;
   master.checkSlaveStates();
   master.serviceRegisterRequests();
   EXPECT_EQ(request.reads, 1);
   EXPECT_EQ(request.address, 0x0990);
-  EXPECT_GE(master.takeSync0Timing().phase_wait__ns, 0);
+  EXPECT_GE(master.takeSync0Timing().phase_wait_ns, 0);
 
   request.state = EC_REQUEST_ERROR;
   master.serviceRegisterRequests();
@@ -306,8 +306,8 @@ TEST(EcMaster, reads_the_sync0_phase_once_a_dc_slave_is_in_op_and_retries_a_fail
   master.serviceRegisterRequests();
   timing = master.takeSync0Timing();
   EXPECT_TRUE(timing.phase_error_valid);
-  EXPECT_EQ(timing.phase_error__ns, 30000);
-  EXPECT_EQ(timing.phase_wait__ns, -1);
+  EXPECT_EQ(timing.phase_error_ns, 30000);
+  EXPECT_EQ(timing.phase_wait_ns, -1);
   // No frame was sent since the phase is known.
   EXPECT_FALSE(timing.valid);
 
@@ -327,7 +327,7 @@ TEST(EcMaster, reports_when_no_slave_uses_sync0)
   const auto timing = master.takeSync0Timing();
   EXPECT_FALSE(timing.uses_sync0);
   EXPECT_FALSE(timing.valid);
-  EXPECT_EQ(timing.phase_wait__ns, -1);
+  EXPECT_EQ(timing.phase_wait_ns, -1);
 }
 
 TEST(EcMaster, measures_the_margin_from_when_the_frame_was_sent)
@@ -354,9 +354,9 @@ TEST(EcMaster, measures_the_margin_from_when_the_frame_was_sent)
   // The margin shrinks as time passes, so a time sampled before the send would exceed the bound.
   using ethercat_interface::sync0_margin_ns;
   EXPECT_LE(
-    timing.margin__ns,
+    timing.margin_ns,
     sync0_margin_ns(fake_master->send_returned_ns, phase_ns, long_cycle_ns));
-  EXPECT_GE(timing.margin__ns, sync0_margin_ns(after_ns, phase_ns, long_cycle_ns));
+  EXPECT_GE(timing.margin_ns, sync0_margin_ns(after_ns, phase_ns, long_cycle_ns));
 }
 
 TEST(EcMaster, counts_a_skipped_cycle_and_a_late_frame_as_slips)
@@ -382,9 +382,9 @@ TEST(EcMaster, counts_a_skipped_cycle_and_a_late_frame_as_slips)
   master.updateSync0Margin(start_ns + 5 * CYCLE_NS + 4400000);
   const auto timing = master.takeSync0Timing();
   EXPECT_EQ(timing.slip_count, 2U);
-  EXPECT_EQ(timing.window_min_distance__ns, 400000);
+  EXPECT_EQ(timing.window_min_distance_ns, 400000);
 
-  EXPECT_EQ(master.takeSync0Timing().window_min_distance__ns, -1);
+  EXPECT_EQ(master.takeSync0Timing().window_min_distance_ns, -1);
 }
 
 TEST(EcMaster, reports_a_slip_with_its_window_minimum_and_then_opens_a_new_window)
@@ -397,21 +397,21 @@ TEST(EcMaster, reports_a_slip_with_its_window_minimum_and_then_opens_a_new_windo
   const uint64_t start_ns = 1000 * CYCLE_NS + 1000000;
 
   master.updateSync0Margin(start_ns);
-  EXPECT_EQ(master.takeSync0Timing().window_min_distance__ns, 4000000);
+  EXPECT_EQ(master.takeSync0Timing().window_min_distance_ns, 4000000);
 
   // Sent 0.5 ms after the SYNC0 it was meant for, so it slips to the next one.
   master.updateSync0Margin(start_ns + CYCLE_NS + 4500000);
   auto timing = master.takeSync0Timing();
   EXPECT_EQ(timing.slip_count, 1U);
-  EXPECT_EQ(timing.window_min_distance__ns, 500000);
+  EXPECT_EQ(timing.window_min_distance_ns, 500000);
 
   // The new window holds only the frame sent since, 4 ms before its SYNC0.
   master.updateSync0Margin(start_ns + 3 * CYCLE_NS);
   timing = master.takeSync0Timing();
   EXPECT_EQ(timing.slip_count, 1U);
-  EXPECT_EQ(timing.window_min_distance__ns, 4000000);
+  EXPECT_EQ(timing.window_min_distance_ns, 4000000);
 
-  EXPECT_EQ(master.takeSync0Timing().window_min_distance__ns, -1);
+  EXPECT_EQ(master.takeSync0Timing().window_min_distance_ns, -1);
 }
 
 TEST(EcMaster, publishes_a_frame_measured_while_the_reader_holds_the_lock_with_the_next_one)
@@ -442,14 +442,14 @@ TEST(EcMaster, publishes_a_frame_measured_while_the_reader_holds_the_lock_with_t
 
   auto timing = master.takeSync0Timing();
   EXPECT_EQ(timing.slip_count, 0U);
-  EXPECT_EQ(timing.window_min_distance__ns, -1);
+  EXPECT_EQ(timing.window_min_distance_ns, -1);
 
   // The next frame, 0.6 ms after its SYNC0 and not a slip, publishes the one before with it.
   master.updateSync0Margin(start_ns + 2 * CYCLE_NS + 4600000);
   timing = master.takeSync0Timing();
   EXPECT_EQ(timing.slip_count, 1U);
-  EXPECT_EQ(timing.window_min_distance__ns, 500000);
-  EXPECT_EQ(timing.margin__ns, 9400000);
+  EXPECT_EQ(timing.window_min_distance_ns, 500000);
+  EXPECT_EQ(timing.margin_ns, 9400000);
 }
 
 TEST(EcMaster, hands_the_margin_to_a_read_but_not_to_an_update)
