@@ -384,6 +384,33 @@ TEST(EcMaster, counts_a_skipped_cycle_and_a_late_frame_as_slips)
   EXPECT_EQ(master.takeSync0Timing().window_min_distance__ns, -1);
 }
 
+TEST(EcMaster, reports_a_slip_with_its_window_minimum_and_then_opens_a_new_window)
+{
+  auto * fake_master = ecrt_request_master(0);
+  *fake_master = ec_master{};
+  TestMaster master(0);
+  master.setCtrlFrequency(FREQUENCY_HZ);
+  master.setSync0Phase(5000000);
+  const uint64_t start_ns = 1000 * CYCLE_NS + 1000000;
+
+  master.updateSync0Margin(start_ns);
+  EXPECT_EQ(master.takeSync0Timing().window_min_distance__ns, 4000000);
+
+  // Sent 0.5 ms after the SYNC0 it was meant for, so it slips to the next one.
+  master.updateSync0Margin(start_ns + CYCLE_NS + 4500000);
+  auto timing = master.takeSync0Timing();
+  EXPECT_EQ(timing.slip_count, 1U);
+  EXPECT_EQ(timing.window_min_distance__ns, 500000);
+
+  // The new window holds only the frame sent since, 4 ms before its SYNC0.
+  master.updateSync0Margin(start_ns + 3 * CYCLE_NS);
+  timing = master.takeSync0Timing();
+  EXPECT_EQ(timing.slip_count, 1U);
+  EXPECT_EQ(timing.window_min_distance__ns, 4000000);
+
+  EXPECT_EQ(master.takeSync0Timing().window_min_distance__ns, -1);
+}
+
 TEST(EcMaster, hands_the_margin_to_a_read_but_not_to_an_update)
 {
   auto * fake_master = ecrt_request_master(0);
