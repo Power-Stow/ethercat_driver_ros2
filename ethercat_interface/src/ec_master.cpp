@@ -25,7 +25,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <mutex>
@@ -36,7 +35,6 @@
 #include <bitset>
 #include <cerrno>
 #include <cstring>
-#include <thread>
 #include <utility>
 
 #include "ethercat_interface/ec_diagnostics.hpp"
@@ -44,15 +42,6 @@
 
 namespace ethercat_interface
 {
-
-namespace
-{
-
-/// How long takeSync0Timing() waits before trying the lock again. The cyclic thread holds it for
-/// well under a microsecond per cycle, so the first retry practically always succeeds.
-constexpr std::chrono::microseconds kSync0LockRetryPeriod{100};
-
-}  // namespace
 
 DomainInfo::DomainInfo(ec_master_t * master)
 {
@@ -187,13 +176,7 @@ void EcMaster::passSync0Margin(int64_t margin_ns)
 
 Sync0Timing EcMaster::takeSync0Timing()
 {
-  // Polled with try_lock rather than locked, so this thread never waits inside the mutex: the
-  // cyclic thread's unlock then never has a waiter to wake, which would cost it a futex syscall.
-  // It holds the lock for a few stores per cycle, so a retry is rare.
-  std::unique_lock<std::mutex> lock(sync0_mutex_, std::defer_lock);
-  while (!lock.try_lock()) {
-    std::this_thread::sleep_for(kSync0LockRetryPeriod);
-  }
+  std::unique_lock<std::mutex> lock = lock_without_waiting(sync0_mutex_);
   Sync0Timing timing;
   timing.margin__ns = sync0_published_margin_ns_;
   timing.slip_count = sync0_published_slip_count_;
@@ -1071,7 +1054,7 @@ void EcMaster::updateDiagnosticsSnapshot(uint32_t domain)
 
 MasterDiagnostics EcMaster::getDiagnostics() const
 {
-  const std::lock_guard<std::mutex> lock(diagnostics_mutex_);
+  const std::unique_lock<std::mutex> lock = lock_without_waiting(diagnostics_mutex_);
   return diagnostics_;
 }
 

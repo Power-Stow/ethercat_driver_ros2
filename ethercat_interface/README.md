@@ -70,6 +70,9 @@ The DC registers are only requested for slaves configured for distributed clocks
 `setDiagnosticsEnabled(true)` (called before `activate()`, so per-slave register requests can be
 created) and read with the thread-safe `getDiagnostics()`. `ethercat_driver` publishes this snapshot
 to `/diagnostics`; see that package's README.
+The cyclic loop only try-locks the mutexes it shares with the diagnostics readers, so it never waits,
+and the readers take them with `lock_without_waiting()` (`ec_diagnostics.hpp`), which polls instead of
+queueing, so the cyclic loop's unlock never has a waiter to wake.
 
 Slave plugins expose their device-specific health by additionally inheriting from
 `Cia402DiagnosticsProvider` (`ec_diagnostics.hpp`) and implementing `cia402Diagnostics()`.

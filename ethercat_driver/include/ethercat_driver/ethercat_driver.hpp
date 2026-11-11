@@ -281,16 +281,24 @@ protected:
   std::thread diagnostics_thread_;
   std::atomic<bool> diagnostics_thread_running_{false};
 
-  /** guards the real-time cycle-timing statistics below */
+  /** real-time cycle-timing statistics */
+  struct TimingStatistics
+  {
+    bool valid = false;
+    double period_min_s = 0.0;
+    double period_max_s = 0.0;
+    double period_mean_s = 0.0;
+    double period_sum_s = 0.0;
+    double jitter_max_s = 0.0;  //< largest |period - expected period| (early or late)
+    uint64_t sample_count = 0;
+    uint64_t overrun_count = 0;
+  };
+  /** accumulated by read(), only touched by the cyclic thread */
+  TimingStatistics timing_;
+  /** guards timing_published_, which read() only try-locks */
   std::mutex timing_mutex_;
-  bool timing_valid_ = false;
-  double timing_period_min_s_ = 0.0;
-  double timing_period_max_s_ = 0.0;
-  double timing_period_mean_s_ = 0.0;
-  double timing_period_sum_s_ = 0.0;
-  double timing_jitter_max_s_ = 0.0;  //< largest |period - expected period| (early or late)
-  uint64_t timing_sample_count_ = 0;
-  uint64_t timing_overrun_count_ = 0;
+  /** timing_ as read() last published it */
+  TimingStatistics timing_published_;
   /** overrun count at the previous publication,
    *  accessed only by the diagnostics publisher thread */
   uint64_t timing_overrun_count_reported_ = 0;

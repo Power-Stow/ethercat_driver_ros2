@@ -42,6 +42,7 @@
 
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
 #include "ethercat_driver/loader_backed_transmission_coupling.hpp"
+#include "ethercat_interface/ec_diagnostics.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/rclcpp.hpp"
 
@@ -1988,25 +1989,32 @@ void EthercatDriver::updateTimingStatistics()
     const double expected_period_s =
       (control_frequency_ > 0.0) ? (1.0 / control_frequency_) : 0.0;
 
-    const std::lock_guard<std::mutex> lock(timing_mutex_);
     // Jitter is the deviation from the expected period in either direction (early or late).
     const double jitter_s = (expected_period_s > 0.0) ? std::abs(dt - expected_period_s) : 0.0;
-    if (timing_sample_count_ == 0) {
-      timing_period_min_s_ = dt;
-      timing_period_max_s_ = dt;
-      timing_jitter_max_s_ = jitter_s;
+    if (timing_.sample_count == 0) {
+      timing_.period_min_s = dt;
+      timing_.period_max_s = dt;
+      timing_.jitter_max_s = jitter_s;
     } else {
-      timing_period_min_s_ = std::min(timing_period_min_s_, dt);
-      timing_period_max_s_ = std::max(timing_period_max_s_, dt);
-      timing_jitter_max_s_ = std::max(timing_jitter_max_s_, jitter_s);
+      timing_.period_min_s = std::min(timing_.period_min_s, dt);
+      timing_.period_max_s = std::max(timing_.period_max_s, dt);
+      timing_.jitter_max_s = std::max(timing_.jitter_max_s, jitter_s);
     }
-    timing_period_sum_s_ += dt;
-    ++timing_sample_count_;
-    timing_period_mean_s_ = timing_period_sum_s_ / static_cast<double>(timing_sample_count_);
+    timing_.period_sum_s += dt;
+    ++timing_.sample_count;
+    timing_.period_mean_s = timing_.period_sum_s / static_cast<double>(timing_.sample_count);
     if (expected_period_s > 0.0 && dt > (1.0 + dt_tolerated_overrun_) * expected_period_s) {
-      ++timing_overrun_count_;
+      ++timing_.overrun_count;
     }
-    timing_valid_ = true;
+    timing_.valid = true;
+
+    // Published with a non-blocking try-lock, so this real-time path never waits for the
+    // diagnostics thread. The statistics are cumulative, so a cycle that skips publishing loses
+    // nothing; the next one publishes it.
+    const std::unique_lock<std::mutex> lock(timing_mutex_, std::try_to_lock);
+    if (lock.owns_lock()) {
+      timing_published_ = timing_;
+    }
   }
   timing_last_ts_ = now;
   timing_last_valid_ = true;
@@ -2020,16 +2028,11 @@ void EthercatDriver::startDiagnostics()
 
   // Reset the timing statistics accumulated during any previous activation.
   {
-    const std::lock_guard<std::mutex> lock(timing_mutex_);
-    timing_valid_ = false;
+    const std::unique_lock<std::mutex> lock =
+      ethercat_interface::lock_without_waiting(timing_mutex_);
+    timing_ = TimingStatistics{};
+    timing_published_ = TimingStatistics{};
     timing_last_valid_ = false;
-    timing_period_min_s_ = 0.0;
-    timing_period_max_s_ = 0.0;
-    timing_period_mean_s_ = 0.0;
-    timing_period_sum_s_ = 0.0;
-    timing_jitter_max_s_ = 0.0;
-    timing_sample_count_ = 0;
-    timing_overrun_count_ = 0;
   }
   // Only touched by the publisher thread, which is not running yet.
   timing_overrun_count_reported_ = 0;
@@ -2250,25 +2253,20 @@ void EthercatDriver::produceTimingDiagnostics(
   diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
   using diagnostic_msgs::msg::DiagnosticStatus;
-  // Copy the scalars and release the lock before formatting, since stat.add() and stat.summary()
-  // may allocate and the real-time read() path contends for the same mutex.
-  bool valid = false;
-  double period_min_s = 0.0;
-  double period_max_s = 0.0;
-  double period_mean_s = 0.0;
-  double jitter_max_s = 0.0;
-  uint64_t sample_count = 0;
-  uint64_t overrun_count = 0;
+  // Copy and release the lock before formatting, since stat.add() and stat.summary() may allocate.
+  TimingStatistics timing;
   {
-    const std::lock_guard<std::mutex> lock(timing_mutex_);
-    valid = timing_valid_;
-    period_min_s = timing_period_min_s_;
-    period_max_s = timing_period_max_s_;
-    period_mean_s = timing_period_mean_s_;
-    jitter_max_s = timing_jitter_max_s_;
-    sample_count = timing_sample_count_;
-    overrun_count = timing_overrun_count_;
+    const std::unique_lock<std::mutex> lock =
+      ethercat_interface::lock_without_waiting(timing_mutex_);
+    timing = timing_published_;
   }
+  const bool valid = timing.valid;
+  const double period_min_s = timing.period_min_s;
+  const double period_max_s = timing.period_max_s;
+  const double period_mean_s = timing.period_mean_s;
+  const double jitter_max_s = timing.jitter_max_s;
+  const uint64_t sample_count = timing.sample_count;
+  const uint64_t overrun_count = timing.overrun_count;
   if (!valid) {
     stat.summary(DiagnosticStatus::OK, "No timing samples yet");
     return;
