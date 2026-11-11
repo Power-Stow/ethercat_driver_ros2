@@ -343,6 +343,9 @@ protected:
   /** copy the current master/domain/slave state into the diagnostics snapshot */
   void updateDiagnosticsSnapshot(uint32_t domain);
 
+  /** pass @p app_time_ns to IgH, recording the first one as the DC reference time */
+  void setApplicationTime(uint64_t app_time_ns);
+
   /** call IgH DC sync functions from a consistent point in the cycle */
   void syncDistributedClocks();
 
@@ -437,6 +440,19 @@ protected:
 
   /** application time passed with the last frame */
   uint64_t app_time_ns_ = 0;
+
+  /** first application time passed to IgH, which IgH keeps as the DC reference time, the origin
+   *  of the SYNC0 grid; 0 until passed */
+  uint64_t dc_reference_time_ns_ = 0;
+
+  /** whether a slave is configured for distributed clocks; set by addSlave() before activate() */
+  bool uses_sync0_ = false;
+
+  /** time a DC slave was first seen in OP while the SYNC0 phase was unread; 0 until then */
+  std::atomic<uint64_t> sync0_operational_since_ns_{0};
+
+  /** sync0_phase_error_ns() of the read SYNC0 phase; min() until read */
+  std::atomic<int64_t> sync0_phase_error_ns_{std::numeric_limits<int64_t>::min()};
 
   /** SYNC0 phase within the cycle in application time, read back from a DC slave in OP;
    *  -1 until read. Only touched by the cyclic thread. */

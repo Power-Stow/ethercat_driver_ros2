@@ -26,6 +26,7 @@
 #include <unordered_map>
 #include <vector>
 #include <pluginlib/class_loader.hpp>
+#include "diagnostic_msgs/msg/diagnostic_status.hpp"
 #include "diagnostic_updater/diagnostic_updater.hpp"
 #include "hardware_interface/handle.hpp"
 #include "hardware_interface/hardware_info.hpp"
@@ -268,6 +269,12 @@ protected:
   int64_t sync0_distance_warn_ns_ = 0;
   /** slip count at the previous publication, accessed only by the diagnostics publisher thread */
   uint64_t sync0_slip_count_reported_ = 0;
+  /** time a DC slave may be in OP with the SYNC0 phase unread before the SYNC0 status says so */
+  double sync0_phase_timeout_s_ = 5.0;
+  /** diagnostic_msgs level of the SYNC0 status once the phase stayed unread that long */
+  uint8_t sync0_phase_missing_level_ = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+  /** whether the SYNC0 phase error was logged in this activation, only touched by the publisher */
+  bool sync0_phase_error_logged_ = false;
 
   rclcpp::Node::SharedPtr diagnostics_node_;
   std::unique_ptr<diagnostic_updater::Updater> diagnostics_updater_;

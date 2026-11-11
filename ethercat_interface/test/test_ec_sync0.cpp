@@ -23,6 +23,7 @@ namespace
 
 using ethercat_interface::sync0_distance_ns;
 using ethercat_interface::sync0_margin_ns;
+using ethercat_interface::sync0_phase_error_ns;
 using ethercat_interface::sync0_phase_ns;
 using ethercat_interface::sync0_index;
 
@@ -46,6 +47,17 @@ TEST(Sync0, phase_from_a_sync0_that_has_already_passed)
 {
   // The register is read a few cycles before the application time it is unwrapped around.
   EXPECT_EQ(sync0_phase_ns(APP_TIME_NS - 26750000, APP_TIME_NS, CYCLE_NS), 7250000);
+}
+
+TEST(Sync0, phase_error_is_against_the_reference_time_plus_the_shift)
+{
+  // APP_TIME_NS has the phase 4 ms, and a 5 ms shift puts SYNC0 at 9 ms.
+  EXPECT_EQ(sync0_phase_error_ns(9000000, APP_TIME_NS, 5000000, CYCLE_NS), 0);
+  EXPECT_EQ(sync0_phase_error_ns(9030000, APP_TIME_NS, 5000000, CYCLE_NS), 30000);
+  // Across the cycle boundary, the error stays the short way round.
+  EXPECT_EQ(sync0_phase_error_ns(20000, APP_TIME_NS, 5980000, CYCLE_NS), 40000);
+  EXPECT_EQ(sync0_phase_error_ns(9960000, APP_TIME_NS, 6000000, CYCLE_NS), -40000);
+  EXPECT_EQ(sync0_phase_error_ns(1000000, APP_TIME_NS, -3000000, CYCLE_NS), 0);
 }
 
 TEST(Sync0, margin_wraps_into_the_cycle)

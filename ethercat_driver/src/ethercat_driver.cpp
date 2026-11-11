@@ -397,6 +397,10 @@ const char * al_status_code_to_string(uint16_t code)
 /// PREEMPT_RT system, where wake-up latency stays well below it.
 constexpr int64_t kDefaultSync0DistanceWarnNs = 200000;
 
+/// Default of the sync0_phase_timeout_s hardware parameter. The SYNC0 phase is read through a
+/// register request, which completes within a few cycles of a DC slave reaching OP.
+constexpr double kDefaultSync0PhaseTimeoutS = 5.0;
+
 /// Accepted range of the diagnostics_period_s hardware parameter, in seconds.
 constexpr double kMinDiagnosticsPeriodS = 1e-3;
 constexpr double kMaxDiagnosticsPeriodS = 3600.0;
@@ -1934,6 +1938,43 @@ void EthercatDriver::parseDiagnosticsParameters()
       static_cast<long long>(half_cycle_ns / 2));  // NOLINT(runtime/int)
     sync0_distance_warn_ns_ = half_cycle_ns / 2;
   }
+
+  sync0_phase_timeout_s_ = kDefaultSync0PhaseTimeoutS;
+  it = info_.hardware_parameters.find("sync0_phase_timeout_s");
+  if (it != info_.hardware_parameters.end()) {
+    try {
+      const double sync0_phase_timeout_in = std::stod(it->second);
+      if (sync0_phase_timeout_in > 0.0) {
+        sync0_phase_timeout_s_ = sync0_phase_timeout_in;
+      } else {
+        RCLCPP_WARN(
+          rclcpp::get_logger("EthercatDriver"),
+          "Invalid sync0_phase_timeout_s (%f, must be > 0); using %.1f s.",
+          sync0_phase_timeout_in, sync0_phase_timeout_s_);
+      }
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(
+        rclcpp::get_logger("EthercatDriver"),
+        "Invalid sync0_phase_timeout_s (%s); using %.1f s.", e.what(), sync0_phase_timeout_s_);
+    }
+  }
+
+  sync0_phase_missing_level_ = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+  it = info_.hardware_parameters.find("sync0_phase_missing_level");
+  if (it != info_.hardware_parameters.end()) {
+    std::string value = it->second;
+    std::transform(
+      value.begin(), value.end(), value.begin(),
+      [](unsigned char c) {return static_cast<char>(std::tolower(c));});
+    if (value == "error") {
+      sync0_phase_missing_level_ = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+    } else if (value != "warn") {
+      RCLCPP_WARN(
+        rclcpp::get_logger("EthercatDriver"),
+        "Invalid sync0_phase_missing_level (%s, must be warn or error); using warn.",
+        it->second.c_str());
+    }
+  }
 }
 
 void EthercatDriver::updateTimingStatistics()
@@ -1993,6 +2034,7 @@ void EthercatDriver::startDiagnostics()
   // Only touched by the publisher thread, which is not running yet.
   timing_overrun_count_reported_ = 0;
   sync0_slip_count_reported_ = 0;
+  sync0_phase_error_logged_ = false;
 
   // Derive the node name and hardware ID from the hardware component name,
   // so multiple driver instances in one controller manager publish distinguishable statuses
@@ -2262,12 +2304,33 @@ void EthercatDriver::produceSync0Diagnostics(
     return;
   }
   const auto timing = master_->takeSync0Timing();
+  if (timing.phase_error_valid && !sync0_phase_error_logged_) {
+    sync0_phase_error_logged_ = true;
+    RCLCPP_INFO(
+      rclcpp::get_logger("EthercatDriver"),
+      "SYNC0 phase read back from a DC slave lies %.1f us from the configured one, "
+      "the DC reference time plus dc_sync0_shift_ns.",
+      static_cast<double>(timing.phase_error__ns) * 1e-3);
+  }
   if (!timing.valid) {
+    if (!timing.uses_sync0) {
+      stat.summary(DiagnosticStatus::OK, "No slave uses SYNC0");
+      return;
+    }
+    if (timing.phase_wait__ns >= 0) {
+      stat.add("phase_wait_s", static_cast<double>(timing.phase_wait__ns) * 1e-9);
+    }
+    if (static_cast<double>(timing.phase_wait__ns) * 1e-9 > sync0_phase_timeout_s_) {
+      stat.summary(
+        sync0_phase_missing_level_, "SYNC0 phase not read back from a DC slave in OP");
+      return;
+    }
     // The phase is read from a DC slave in OP, and the margin needs a cyclic frame after that.
     stat.summary(DiagnosticStatus::OK, "SYNC0 margin not measured yet");
     return;
   }
   stat.add("margin_us", static_cast<double>(timing.margin__ns) * 1e-3);
+  stat.add("phase_error_us", static_cast<double>(timing.phase_error__ns) * 1e-3);
   if (timing.window_min_distance__ns >= 0) {
     stat.add("min_distance_us", static_cast<double>(timing.window_min_distance__ns) * 1e-3);
   }

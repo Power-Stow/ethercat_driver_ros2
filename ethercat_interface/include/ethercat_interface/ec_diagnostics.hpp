@@ -140,6 +140,15 @@ struct Sync0Timing
   /// Each one made the slaves latch one frame's outputs at two SYNC0 events, or skip one frame's
   /// outputs entirely, whether the frame crossed a SYNC0 or a cycle sent no frame at all.
   uint64_t slip_count = 0;
+  /// True when a slave is configured for distributed clocks, which makes it run SYNC0.
+  bool uses_sync0 = false;
+  /// Time since a DC slave reached OP while the SYNC0 phase has not been read back yet, or -1 when
+  /// it has been read or no DC slave reached OP.
+  int64_t phase_wait__ns = -1;
+  /// False until the SYNC0 phase has been read back.
+  bool phase_error_valid = false;
+  /// SYNC0 phase read back minus the phase IgH configured, see sync0_phase_error_ns().
+  int64_t phase_error__ns = 0;
 };
 
 /// @brief SYNC0 phase within the cycle, from a slave's next SYNC0 time (ESC register 0x0990).
@@ -157,6 +166,29 @@ inline int64_t sync0_phase_ns(uint64_t next_sync0_ns, uint64_t app_time_ns, uint
     static_cast<uint32_t>(next_sync0_ns) - static_cast<uint32_t>(app_time_ns));
   const uint64_t unwrapped_ns = app_time_ns + static_cast<uint64_t>(static_cast<int64_t>(ahead_ns));
   return static_cast<int64_t>(unwrapped_ns % cycle_ns);
+}
+
+/// @brief SYNC0 phase read back from a slave minus the phase IgH configured.
+///
+/// IgH starts SYNC0 at the DC reference time, the first application time it received, plus whole
+/// cycles plus the SYNC0 shift, so a slave that follows its configuration has the phase
+/// (reference time + shift) mod cycle and a difference close to 0.
+/// @param phase_ns SYNC0 phase from sync0_phase_ns().
+/// @param dc_reference_time_ns First application time passed to IgH.
+/// @param shift_ns SYNC0 shift the DC slaves were configured with.
+/// @param cycle_ns SYNC0 cycle time, greater than 0.
+/// @return Difference in [-cycle_ns / 2, cycle_ns / 2).
+inline int64_t sync0_phase_error_ns(
+  int64_t phase_ns, uint64_t dc_reference_time_ns, int32_t shift_ns, uint32_t cycle_ns)
+{
+  const auto cycle = static_cast<int64_t>(cycle_ns);
+  const int64_t configured_phase_ns =
+    static_cast<int64_t>(dc_reference_time_ns % cycle_ns) + shift_ns;
+  const int64_t error_ns = (phase_ns - configured_phase_ns) % cycle;
+  if (error_ns < -cycle / 2) {
+    return error_ns + cycle;
+  }
+  return (error_ns >= cycle - cycle / 2) ? error_ns - cycle : error_ns;
 }
 
 /// @brief Time from sending a frame to the next SYNC0.

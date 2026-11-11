@@ -119,10 +119,18 @@ uint64_t EcMaster::applicationTimeNs()
   return EC_MONOTONIC2NANO(t);
 }
 
+void EcMaster::setApplicationTime(uint64_t app_time_ns)
+{
+  if (dc_reference_time_ns_ == 0) {
+    dc_reference_time_ns_ = app_time_ns;
+  }
+  ecrt_master_application_time(master_, app_time_ns);
+}
+
 void EcMaster::syncDistributedClocks()
 {
   app_time_ns_ = applicationTimeNs();
-  ecrt_master_application_time(master_, app_time_ns_);
+  setApplicationTime(app_time_ns_);
   ecrt_master_sync_reference_clock(master_);
   ecrt_master_sync_slave_clocks(master_);
 }
@@ -169,6 +177,18 @@ Sync0Timing EcMaster::takeSync0Timing()
   timing.window_min_distance__ns =
     (window_min_ns == std::numeric_limits<int64_t>::max()) ? -1 : window_min_ns;
   timing.slip_count = sync0_slip_count_.load(std::memory_order_relaxed);
+  timing.uses_sync0 = uses_sync0_;
+  const int64_t phase_error_ns = sync0_phase_error_ns_.load(std::memory_order_relaxed);
+  timing.phase_error_valid = phase_error_ns != std::numeric_limits<int64_t>::min();
+  if (timing.phase_error_valid) {
+    timing.phase_error__ns = phase_error_ns;
+  } else {
+    const uint64_t operational_since_ns =
+      sync0_operational_since_ns_.load(std::memory_order_relaxed);
+    if (operational_since_ns != 0) {
+      timing.phase_wait__ns = static_cast<int64_t>(applicationTimeNs() - operational_since_ns);
+    }
+  }
   return timing;
 }
 
@@ -214,7 +234,8 @@ void EcMaster::addSlave(EcSlave * slave)
         "EtherCAT DC requested, but control frequency/interval is not configured");
     }
 
-    ecrt_master_application_time(master_, applicationTimeNs());
+    setApplicationTime(applicationTimeNs());
+    uses_sync0_ = true;
 
     ecrt_slave_config_dc(
       slave_info.config,
@@ -483,7 +504,7 @@ bool EcMaster::activate()
     }
   }
   // set application time
-  ecrt_master_application_time(master_, applicationTimeNs());
+  setApplicationTime(applicationTimeNs());
 
   // activate master
   bool activate_status = ecrt_master_activate(master_);
@@ -949,10 +970,16 @@ void EcMaster::serviceRegisterRequests()
     if (slave.dc_next_sync0_reg != nullptr && sync0_phase_ns_ < 0 &&
       slave.config_state.operational)
     {
+      if (sync0_operational_since_ns_.load(std::memory_order_relaxed) == 0) {
+        sync0_operational_since_ns_.store(applicationTimeNs(), std::memory_order_relaxed);
+      }
       const ec_request_state_t state = ecrt_reg_request_state(slave.dc_next_sync0_reg);
       if (state == EC_REQUEST_SUCCESS) {
         sync0_phase_ns_ = sync0_phase_ns(
           EC_READ_U64(ecrt_reg_request_data(slave.dc_next_sync0_reg)), app_time_ns_, interval_);
+        const int64_t phase_error_ns = sync0_phase_error_ns(
+          sync0_phase_ns_, dc_reference_time_ns_, dc_sync0_shift_ns_, interval_);
+        sync0_phase_error_ns_.store(phase_error_ns, std::memory_order_relaxed);
       } else if (state != EC_REQUEST_BUSY) {
         ecrt_reg_request_read(slave.dc_next_sync0_reg, 0x0990, 8);
       }

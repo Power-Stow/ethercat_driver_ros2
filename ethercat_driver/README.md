@@ -50,6 +50,8 @@ Set on the `<hardware>` element of the `ros2_control` system.
 `dc_time_diff_warn_ns` — per-slave DC system-time-difference magnitude above which a `WARN` is raised (default `10000`, valid range `[0, 2147483647]`; out-of-range values fall back to the default).
 `dt_tolerated_overrun` — fraction of the expected cycle period a cycle may exceed before it counts as an overrun, i.e. the threshold is `(1 + dt_tolerated_overrun) / control_frequency` (default `0.5`; must be finite and `>= 0`, otherwise the default is used).
 `sync0_distance_warn_ns` — distance between a frame's send and the nearest SYNC0 below which the **EtherCAT SYNC0** status raises a `WARN` (default `200000`; must be `>= 0`, otherwise the default is used, and below half a cycle, otherwise a quarter cycle is used).
+`sync0_phase_timeout_s` — time a DC slave may be in OP before the **EtherCAT SYNC0** status reports that the SYNC0 phase was not read back (default `5.0`; must be `> 0`, otherwise the default is used).
+`sync0_phase_missing_level` — level of that report, `warn` or `error` (default `warn`; any other value uses `warn`).
 
 ### Health diagnostics
 
@@ -70,11 +72,15 @@ Published `DiagnosticStatus` entries:
 - **EtherCAT RT Timing** — cyclic-loop period min/mean/max, max jitter (largest deviation from the expected period, early or late), cumulative deadline-overrun count, and overruns since the previous report.
 - **EtherCAT SYNC0** — timing of the frames sent by `write()` relative to the SYNC0 event of the DC slaves: `margin_us` from the last frame's send to the next SYNC0, `min_distance_us` from a send to its nearest SYNC0 since the previous report, and the cumulative `slip_count` and `slips_since_last_report`.
   A slip is a frame that does not reach the SYNC0 right after the one the previous frame reached, which makes the slaves latch one frame's outputs twice or skip them, whether the frame crossed a SYNC0 or a cycle sent no frame at all.
-  The SYNC0 phase is read once from the first DC slave in OP (next SYNC0 time, ESC register `0x0990`), and until it is and a cyclic frame was sent, the status reports `OK` without values.
+  The SYNC0 phase is read once from the first DC slave in OP (next SYNC0 time, ESC register `0x0990`), and until it is and a cyclic frame was sent, the status reports `OK` with only `phase_wait_s`, the time a DC slave has been in OP since.
+  When that exceeds `sync0_phase_timeout_s`, the status reports `sync0_phase_missing_level` instead, and without any slave configured for DC it reports `OK`, since nothing runs SYNC0.
+  `phase_error_us` is the phase read back minus the one IgH configured, the DC reference time plus `dc_sync0_shift_ns`, which is close to 0 for a slave that follows its configuration.
+  The driver also logs it once per activation, when the phase is read.
 
 Levels: link down, a slave offline/not-operational/not configured by the master, or a drive fault → `ERROR`;
 incomplete working counter, high DC clock drift, loop overruns since the previous report, a frame sent closer to SYNC0 than `sync0_distance_warn_ns`, or no cyclic frame since the previous report → `WARN`.
 A SYNC0 slip since the previous report → `ERROR`.
+A SYNC0 phase not read back within `sync0_phase_timeout_s` of a DC slave reaching OP → `sync0_phase_missing_level`.
 A failure to set up the diagnostics node or publisher thread is logged as an error,
 diagnostics collection in the cyclic loop is disabled for that activation, and activation continues without diagnostics.
 A failed publication is logged (throttled) and retried on the next period.

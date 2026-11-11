@@ -81,6 +81,9 @@ With diagnostics enabled, the master also measures every cyclic frame's margin t
 SYNC0 event, from the next SYNC0 time it reads once from a DC slave in OP (ESC register `0x0990`),
 and hands the latest margin, the smallest distance to SYNC0 since the previous call and the slip
 count out through the thread-safe `takeSync0Timing()`.
+It also reports whether any slave uses SYNC0, how long a DC slave has been in OP while the phase is
+unread, and the phase read back minus the one IgH configured from the DC reference time and the
+SYNC0 shift.
 Slave plugins that want the margin of the frame whose inputs they read inherit from
 `Sync0MarginConsumer` and implement `setSync0Margin()`, which the master calls before every read
 and update pass. Like `Cia402DiagnosticsProvider`, it leaves the `EcSlave` layout unchanged.
