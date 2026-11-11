@@ -25,8 +25,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <iostream>
@@ -34,6 +36,7 @@
 #include <bitset>
 #include <cerrno>
 #include <cstring>
+#include <thread>
 #include <utility>
 
 #include "ethercat_interface/ec_diagnostics.hpp"
@@ -41,6 +44,15 @@
 
 namespace ethercat_interface
 {
+
+namespace
+{
+
+/// How long takeSync0Timing() waits before trying the lock again. The cyclic thread holds it for
+/// well under a microsecond per cycle, so the first retry practically always succeeds.
+constexpr std::chrono::microseconds kSync0LockRetryPeriod{100};
+
+}  // namespace
 
 DomainInfo::DomainInfo(ec_master_t * master)
 {
@@ -142,42 +154,26 @@ void EcMaster::updateSync0Margin(uint64_t send_time_ns)
   }
   const int64_t margin_ns = sync0_margin_ns(send_time_ns, sync0_phase_ns_, interval_);
   const uint64_t index = sync0_index(send_time_ns, sync0_phase_ns_, interval_);
-  const int64_t distance_ns = sync0_distance_ns(margin_ns, interval_);
-  // This thread is the only writer of the fields, so its relaxed loads return its own last values.
-  const bool slipped =
-    sync0_margin_ns_.load(std::memory_order_relaxed) >= 0 && index != sync0_index_ + 1;
+  if (sync0_margin_ns_ >= 0 && index != sync0_index_ + 1) {
+    ++sync0_slip_count_;
+  }
   sync0_index_ = index;
+  sync0_margin_ns_ = margin_ns;
+  sync0_unpublished_min_distance_ns_ =
+    std::min(sync0_unpublished_min_distance_ns_, sync0_distance_ns(margin_ns, interval_));
 
-  // takeSync0Timing() acknowledges the window it took by storing the sequence it read, and the
-  // window restarts once this thread sees that. A frame sent between that read and the store went
-  // into the window already taken, so it seeds the new one.
-  // ponytail: only the last frame seeds it, so a reader stalled for more than a cycle between its
-  // read and its store loses the distances of the frames before; their slips are still counted.
-  // Upgrade: keep the sequence and distance of the last few frames and seed with all after it.
-  int64_t window_min_ns = sync0_window_min_distance_ns_.load(std::memory_order_relaxed);
-  const uint32_t window_taken_at = sync0_window_taken_at_.load(std::memory_order_relaxed);
-  if (window_taken_at != sync0_window_started_at_) {
-    sync0_window_started_at_ = window_taken_at;
-    window_min_ns = (sync0_previous_sequence_ != window_taken_at) ?
-      sync0_previous_distance_ns_ : std::numeric_limits<int64_t>::max();
+  // Published with a non-blocking try-lock, like the diagnostics snapshot, so the cyclic loop never
+  // waits for takeSync0Timing(). A frame measured while the reader holds the lock stays unpublished
+  // and goes out with the next one, together with any slip it counted, so nothing is lost and a
+  // slip is always published with the distance of the frame that slipped.
+  std::unique_lock<std::mutex> lock(sync0_mutex_, std::try_to_lock);
+  if (lock.owns_lock()) {
+    sync0_published_margin_ns_ = sync0_margin_ns_;
+    sync0_published_slip_count_ = sync0_slip_count_;
+    sync0_published_min_distance_ns_ =
+      std::min(sync0_published_min_distance_ns_, sync0_unpublished_min_distance_ns_);
+    sync0_unpublished_min_distance_ns_ = std::numeric_limits<int64_t>::max();
   }
-  window_min_ns = std::min(window_min_ns, distance_ns);
-
-  // Seqlock write: the sequence is odd while the fields change, so takeSync0Timing() retries
-  // rather than mix two frames, and this thread never waits on the reader.
-  const uint32_t sequence = sync0_sequence_.load(std::memory_order_relaxed);
-  sync0_sequence_.store(sequence + 1, std::memory_order_relaxed);
-  std::atomic_thread_fence(std::memory_order_release);
-  sync0_margin_ns_.store(margin_ns, std::memory_order_relaxed);
-  if (slipped) {
-    sync0_slip_count_.store(
-      sync0_slip_count_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
-  }
-  sync0_window_min_distance_ns_.store(window_min_ns, std::memory_order_relaxed);
-  sync0_sequence_.store(sequence + 2, std::memory_order_release);
-
-  sync0_previous_sequence_ = sequence + 2;
-  sync0_previous_distance_ns_ = distance_ns;
 }
 
 void EcMaster::passSync0Margin(int64_t margin_ns)
@@ -191,32 +187,23 @@ void EcMaster::passSync0Margin(int64_t margin_ns)
 
 Sync0Timing EcMaster::takeSync0Timing()
 {
-  // Seqlock read: retried while updateSync0Margin() writes, so the margin, the slip count and the
-  // window minimum all describe the same frame, a snapshot consistent for one cycle. Only this
-  // side retries; the cyclic thread never waits.
-  uint32_t sequence = 0;
-  int64_t margin_ns = -1;
-  uint64_t slip_count = 0;
-  int64_t window_min_ns = 0;
-  while (true) {
-    sequence = sync0_sequence_.load(std::memory_order_acquire);
-    margin_ns = sync0_margin_ns_.load(std::memory_order_relaxed);
-    slip_count = sync0_slip_count_.load(std::memory_order_relaxed);
-    window_min_ns = sync0_window_min_distance_ns_.load(std::memory_order_relaxed);
-    std::atomic_thread_fence(std::memory_order_acquire);
-    if ((sequence & 1U) == 0 && sync0_sequence_.load(std::memory_order_relaxed) == sequence) {
-      break;
-    }
+  // Polled with try_lock rather than locked, so this thread never waits inside the mutex: the
+  // cyclic thread's unlock then never has a waiter to wake, which would cost it a futex syscall.
+  // It holds the lock for a few stores per cycle, so a retry is rare.
+  std::unique_lock<std::mutex> lock(sync0_mutex_, std::defer_lock);
+  while (!lock.try_lock()) {
+    std::this_thread::sleep_for(kSync0LockRetryPeriod);
   }
-
   Sync0Timing timing;
-  timing.margin__ns = margin_ns;
-  timing.valid = margin_ns >= 0;
-  timing.slip_count = slip_count;
-  // An unchanged sequence means no frame was sent since the previous window was taken.
-  const bool frame_sent = sequence != sync0_window_taken_at_.load(std::memory_order_relaxed);
-  timing.window_min_distance__ns = frame_sent ? window_min_ns : -1;
-  sync0_window_taken_at_.store(sequence, std::memory_order_relaxed);
+  timing.margin__ns = sync0_published_margin_ns_;
+  timing.slip_count = sync0_published_slip_count_;
+  const int64_t window_min_ns = sync0_published_min_distance_ns_;
+  sync0_published_min_distance_ns_ = std::numeric_limits<int64_t>::max();
+  lock.unlock();
+
+  timing.valid = timing.margin__ns >= 0;
+  timing.window_min_distance__ns =
+    (window_min_ns == std::numeric_limits<int64_t>::max()) ? -1 : window_min_ns;
   timing.uses_sync0 = uses_sync0_;
   const int64_t phase_error_ns = sync0_phase_error_ns_.load(std::memory_order_relaxed);
   timing.phase_error_valid = phase_error_ns != std::numeric_limits<int64_t>::min();
@@ -665,7 +652,7 @@ void EcMaster::readData(uint32_t domain)
   }
 
   // The inputs read now came with the frame sent last, so its margin describes them.
-  passSync0Margin(sync0_margin_ns_.load(std::memory_order_relaxed));
+  passSync0Margin(sync0_margin_ns_);
 
   // read and write process data
   for (DomainInfo::Entry & entry : domain_info->entries) {

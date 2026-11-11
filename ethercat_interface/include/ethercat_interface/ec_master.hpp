@@ -458,32 +458,29 @@ protected:
    *  -1 until read. Only touched by the cyclic thread. */
   int64_t sync0_phase_ns_ = -1;
 
-  /** seqlock over the three fields below, odd while updateSync0Margin() writes them */
-  std::atomic<uint32_t> sync0_sequence_{0};
+  // The four SYNC0 fields below are only touched by the cyclic thread.
 
   /** SYNC0 margin of the last frame sent by writeData(); -1 until known */
-  std::atomic<int64_t> sync0_margin_ns_{-1};
+  int64_t sync0_margin_ns_ = -1;
 
   /** cumulative frames that did not reach the SYNC0 after the previous frame's, see Sync0Timing */
-  std::atomic<uint64_t> sync0_slip_count_{0};
+  uint64_t sync0_slip_count_ = 0;
 
-  /** smallest distance to SYNC0 in the window started after sync0_window_started_at_ */
-  std::atomic<int64_t> sync0_window_min_distance_ns_{std::numeric_limits<int64_t>::max()};
-
-  /** sync0_sequence_ value takeSync0Timing() last took the window at; only it writes this */
-  std::atomic<uint32_t> sync0_window_taken_at_{0};
-
-  /** The fields below are only touched by the cyclic thread. */
-
-  /** sync0_window_taken_at_ value the current window was started at */
-  uint32_t sync0_window_started_at_ = 0;
-
-  /** sync0_sequence_ after the last frame, and that frame's distance to SYNC0 */
-  uint32_t sync0_previous_sequence_ = 0;
-  int64_t sync0_previous_distance_ns_ = 0;
+  /** smallest distance to SYNC0 of the frames not published yet; max() when there are none */
+  int64_t sync0_unpublished_min_distance_ns_ = std::numeric_limits<int64_t>::max();
 
   /** SYNC0 index of the last frame sent by writeData(), valid once sync0_margin_ns_ is */
   uint64_t sync0_index_ = 0;
+
+  /** guards the published SYNC0 timing below between updateSync0Margin() and takeSync0Timing() */
+  std::mutex sync0_mutex_;
+
+  /** SYNC0 timing as the cyclic thread last published it under sync0_mutex_ */
+  int64_t sync0_published_margin_ns_ = -1;
+  uint64_t sync0_published_slip_count_ = 0;
+
+  /** smallest distance to SYNC0 published since the last takeSync0Timing(); max() when none */
+  int64_t sync0_published_min_distance_ns_ = std::numeric_limits<int64_t>::max();
 
   /** Data transfers (necessary for transfer communication) */
   std::vector<EcTransferInfo> transfers_;

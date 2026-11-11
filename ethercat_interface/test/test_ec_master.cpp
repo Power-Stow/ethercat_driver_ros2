@@ -20,6 +20,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <future>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -76,6 +78,7 @@ public:
 
   void addDomain() {domain_info_[0] = new ethercat_interface::DomainInfo(master_);}
   void setSync0Phase(int64_t phase_ns) {sync0_phase_ns_ = phase_ns;}
+  std::mutex & sync0Mutex() {return sync0_mutex_;}
 };
 
 /// A slave configured for SYNC0 that records the margin the master hands it.
@@ -409,6 +412,44 @@ TEST(EcMaster, reports_a_slip_with_its_window_minimum_and_then_opens_a_new_windo
   EXPECT_EQ(timing.window_min_distance__ns, 4000000);
 
   EXPECT_EQ(master.takeSync0Timing().window_min_distance__ns, -1);
+}
+
+TEST(EcMaster, publishes_a_frame_measured_while_the_reader_holds_the_lock_with_the_next_one)
+{
+  auto * fake_master = ecrt_request_master(0);
+  *fake_master = ec_master{};
+  TestMaster master(0);
+  master.setCtrlFrequency(FREQUENCY_HZ);
+  master.setSync0Phase(5000000);
+  const uint64_t start_ns = 1000 * CYCLE_NS + 1000000;
+  master.updateSync0Margin(start_ns);
+  master.takeSync0Timing();
+
+  // Held by another thread, as takeSync0Timing() does on the diagnostics thread.
+  std::promise<void> locked;
+  std::promise<void> release;
+  std::thread reader([&master, &locked, &release]() {
+      const std::lock_guard<std::mutex> lock(master.sync0Mutex());
+      locked.set_value();
+      release.get_future().wait();
+    });
+  locked.get_future().wait();
+  // Sent 0.5 ms after the SYNC0 it was meant for, so it slips. Returns without the lock; a blocking
+  // lock would hang here.
+  master.updateSync0Margin(start_ns + CYCLE_NS + 4500000);
+  release.set_value();
+  reader.join();
+
+  auto timing = master.takeSync0Timing();
+  EXPECT_EQ(timing.slip_count, 0U);
+  EXPECT_EQ(timing.window_min_distance__ns, -1);
+
+  // The next frame, 0.6 ms after its SYNC0 and not a slip, publishes the one before with it.
+  master.updateSync0Margin(start_ns + 2 * CYCLE_NS + 4600000);
+  timing = master.takeSync0Timing();
+  EXPECT_EQ(timing.slip_count, 1U);
+  EXPECT_EQ(timing.window_min_distance__ns, 500000);
+  EXPECT_EQ(timing.margin__ns, 9400000);
 }
 
 TEST(EcMaster, hands_the_margin_to_a_read_but_not_to_an_update)
