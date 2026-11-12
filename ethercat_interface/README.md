@@ -70,12 +70,26 @@ The DC registers are only requested for slaves configured for distributed clocks
 `setDiagnosticsEnabled(true)` (called before `activate()`, so per-slave register requests can be
 created) and read with the thread-safe `getDiagnostics()`. `ethercat_driver` publishes this snapshot
 to `/diagnostics`; see that package's README.
+The cyclic loop only try-locks the mutexes it shares with the diagnostics readers, so it never waits,
+and the readers take them with `lock_without_waiting()` (`ec_diagnostics.hpp`), which polls instead of
+queueing, so the cyclic loop's unlock never has a waiter to wake.
 
 Slave plugins expose their device-specific health by additionally inheriting from
 `Cia402DiagnosticsProvider` (`ec_diagnostics.hpp`) and implementing `cia402Diagnostics()`.
 The interface is deliberately separate from `EcSlave`, so the `EcSlave` vtable and thus the ABI of
 existing out-of-tree slave plugins is unchanged; the master discovers it with a `dynamic_cast` once
 per slave in `addSlave()`.
+
+With diagnostics enabled, the master also measures every cyclic frame's margin to the DC slaves'
+SYNC0 event, from the next SYNC0 time it reads once from a DC slave in OP (ESC register `0x0990`),
+and hands the latest margin, the smallest distance to SYNC0 since the previous call and the slip
+count out through the thread-safe `takeSync0Timing()`.
+It also reports whether any slave uses SYNC0, how long a DC slave has been in OP while the phase is
+unread, and the phase read back minus the one IgH configured from the DC reference time and the
+SYNC0 shift.
+Slave plugins that want the margin of the frame whose inputs they read inherit from
+`Sync0MarginConsumer` and implement `setSync0Margin()`, which the master calls before every read
+and update pass. Like `Cia402DiagnosticsProvider`, it leaves the `EcSlave` layout unchanged.
 
 ## Testing
 

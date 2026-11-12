@@ -42,6 +42,7 @@
 
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
 #include "ethercat_driver/loader_backed_transmission_coupling.hpp"
+#include "ethercat_interface/ec_diagnostics.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/rclcpp.hpp"
 
@@ -392,9 +393,18 @@ const char * al_status_code_to_string(uint16_t code)
   }
 }
 
+/// Default of the sync0_distance_warn_ns hardware parameter. A frame sent this close to SYNC0 is
+/// one late wake-up of the cyclic loop away from being latched in the wrong cycle on a typical
+/// PREEMPT_RT system, where wake-up latency stays well below it.
+constexpr int64_t DEFAULT_SYNC0_DISTANCE_WARN_NS = 200000;
+
+/// Default of the sync0_phase_timeout_s hardware parameter. The SYNC0 phase is read through a
+/// register request, which completes within a few cycles of a DC slave reaching OP.
+constexpr double DEFAULT_SYNC0_PHASE_TIMEOUT_S = 5.0;
+
 /// Accepted range of the diagnostics_period_s hardware parameter, in seconds.
-constexpr double kMinDiagnosticsPeriodS = 1e-3;
-constexpr double kMaxDiagnosticsPeriodS = 3600.0;
+constexpr double MIN_DIAGNOSTICS_PERIOD_S = 1e-3;
+constexpr double MAX_DIAGNOSTICS_PERIOD_S = 3600.0;
 
 /// Build a valid ROS node name from @p prefix and a hardware component name, preserving uniqueness.
 ///
@@ -1834,15 +1844,15 @@ void EthercatDriver::parseDiagnosticsParameters()
       // Bounded so the steady-clock conversion in startDiagnostics() neither truncates to zero
       // (which would publish in a busy loop) nor overflows; NaN fails the comparison as well.
       const auto diagnostics_period_in = std::stod(it->second);
-      if (diagnostics_period_in >= kMinDiagnosticsPeriodS &&
-        diagnostics_period_in <= kMaxDiagnosticsPeriodS)
+      if (diagnostics_period_in >= MIN_DIAGNOSTICS_PERIOD_S &&
+        diagnostics_period_in <= MAX_DIAGNOSTICS_PERIOD_S)
       {
         diagnostics_period_s_ = diagnostics_period_in;
       } else {
         RCLCPP_WARN(
           rclcpp::get_logger("EthercatDriver"),
           "Invalid diagnostics_period_s (%f, must be in [%.3f, %.0f]); using %.2f s.",
-          diagnostics_period_in, kMinDiagnosticsPeriodS, kMaxDiagnosticsPeriodS,
+          diagnostics_period_in, MIN_DIAGNOSTICS_PERIOD_S, MAX_DIAGNOSTICS_PERIOD_S,
           diagnostics_period_s_);
       }
     } catch (const std::exception & e) {
@@ -1896,6 +1906,76 @@ void EthercatDriver::parseDiagnosticsParameters()
         "Invalid dt_tolerated_overrun (%s); using %.2f.", e.what(), dt_tolerated_overrun_);
     }
   }
+
+  sync0_distance_warn_ns_ = DEFAULT_SYNC0_DISTANCE_WARN_NS;
+  it = info_.hardware_parameters.find("sync0_distance_warn_ns");
+  if (it != info_.hardware_parameters.end()) {
+    try {
+      const long long sync0_distance_warn_in = std::stoll(it->second);  // NOLINT(runtime/int)
+      if (sync0_distance_warn_in >= 0) {
+        sync0_distance_warn_ns_ = static_cast<int64_t>(sync0_distance_warn_in);
+      } else {
+        RCLCPP_WARN(
+          rclcpp::get_logger("EthercatDriver"),
+          "Invalid sync0_distance_warn_ns (%lld, must be >= 0); using %lld ns.",
+          sync0_distance_warn_in, static_cast<long long>(sync0_distance_warn_ns_));  // NOLINT
+      }
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(
+        rclcpp::get_logger("EthercatDriver"),
+        "Invalid sync0_distance_warn_ns (%s); using %lld ns.", e.what(),
+        static_cast<long long>(sync0_distance_warn_ns_));  // NOLINT(runtime/int)
+    }
+  }
+  // No frame lies further than half a cycle from SYNC0, so a threshold at or above that would warn
+  // on every report. control_frequency_ is validated by setCtrlFrequency() before this runs.
+  const auto half_cycle_ns = static_cast<int64_t>(0.5 * 1e9 / control_frequency_);
+  if (sync0_distance_warn_ns_ >= half_cycle_ns) {
+    RCLCPP_WARN(
+      rclcpp::get_logger("EthercatDriver"),
+      "sync0_distance_warn_ns (%lld) is not below half a cycle (%lld ns); using %lld ns.",
+      static_cast<long long>(sync0_distance_warn_ns_),  // NOLINT(runtime/int)
+      static_cast<long long>(half_cycle_ns),  // NOLINT(runtime/int)
+      static_cast<long long>(half_cycle_ns / 2));  // NOLINT(runtime/int)
+    sync0_distance_warn_ns_ = half_cycle_ns / 2;
+  }
+
+  sync0_phase_timeout_s_ = DEFAULT_SYNC0_PHASE_TIMEOUT_S;
+  it = info_.hardware_parameters.find("sync0_phase_timeout_s");
+  if (it != info_.hardware_parameters.end()) {
+    try {
+      const double sync0_phase_timeout_in = std::stod(it->second);
+      if (sync0_phase_timeout_in > 0.0) {
+        sync0_phase_timeout_s_ = sync0_phase_timeout_in;
+      } else {
+        RCLCPP_WARN(
+          rclcpp::get_logger("EthercatDriver"),
+          "Invalid sync0_phase_timeout_s (%f, must be > 0); using %.1f s.",
+          sync0_phase_timeout_in, sync0_phase_timeout_s_);
+      }
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(
+        rclcpp::get_logger("EthercatDriver"),
+        "Invalid sync0_phase_timeout_s (%s); using %.1f s.", e.what(), sync0_phase_timeout_s_);
+    }
+  }
+
+  sync0_phase_missing_level_ = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+  it = info_.hardware_parameters.find("sync0_phase_missing_level");
+  if (it != info_.hardware_parameters.end()) {
+    std::string value = it->second;
+    std::transform(
+      value.begin(), value.end(), value.begin(),
+      [](unsigned char c) {return static_cast<char>(std::tolower(c));});
+    if (value == "error") {
+      sync0_phase_missing_level_ = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+    } else if (value != "warn") {
+      RCLCPP_WARN(
+        rclcpp::get_logger("EthercatDriver"),
+        "Invalid sync0_phase_missing_level (%s, must be warn or error); using warn.",
+        it->second.c_str());
+    }
+  }
 }
 
 void EthercatDriver::updateTimingStatistics()
@@ -1909,25 +1989,32 @@ void EthercatDriver::updateTimingStatistics()
     const double expected_period_s =
       (control_frequency_ > 0.0) ? (1.0 / control_frequency_) : 0.0;
 
-    const std::lock_guard<std::mutex> lock(timing_mutex_);
     // Jitter is the deviation from the expected period in either direction (early or late).
     const double jitter_s = (expected_period_s > 0.0) ? std::abs(dt - expected_period_s) : 0.0;
-    if (timing_sample_count_ == 0) {
-      timing_period_min_s_ = dt;
-      timing_period_max_s_ = dt;
-      timing_jitter_max_s_ = jitter_s;
+    if (timing_.sample_count == 0) {
+      timing_.period_min_s = dt;
+      timing_.period_max_s = dt;
+      timing_.jitter_max_s = jitter_s;
     } else {
-      timing_period_min_s_ = std::min(timing_period_min_s_, dt);
-      timing_period_max_s_ = std::max(timing_period_max_s_, dt);
-      timing_jitter_max_s_ = std::max(timing_jitter_max_s_, jitter_s);
+      timing_.period_min_s = std::min(timing_.period_min_s, dt);
+      timing_.period_max_s = std::max(timing_.period_max_s, dt);
+      timing_.jitter_max_s = std::max(timing_.jitter_max_s, jitter_s);
     }
-    timing_period_sum_s_ += dt;
-    ++timing_sample_count_;
-    timing_period_mean_s_ = timing_period_sum_s_ / static_cast<double>(timing_sample_count_);
+    timing_.period_sum_s += dt;
+    ++timing_.sample_count;
+    timing_.period_mean_s = timing_.period_sum_s / static_cast<double>(timing_.sample_count);
     if (expected_period_s > 0.0 && dt > (1.0 + dt_tolerated_overrun_) * expected_period_s) {
-      ++timing_overrun_count_;
+      ++timing_.overrun_count;
     }
-    timing_valid_ = true;
+    timing_.valid = true;
+
+    // Published with a non-blocking try-lock, so this real-time path never waits for the
+    // diagnostics thread. The statistics are cumulative, so a cycle that skips publishing loses
+    // nothing; the next one publishes it.
+    const std::unique_lock<std::mutex> lock(timing_mutex_, std::try_to_lock);
+    if (lock.owns_lock()) {
+      timing_published_ = timing_;
+    }
   }
   timing_last_ts_ = now;
   timing_last_valid_ = true;
@@ -1941,19 +2028,16 @@ void EthercatDriver::startDiagnostics()
 
   // Reset the timing statistics accumulated during any previous activation.
   {
-    const std::lock_guard<std::mutex> lock(timing_mutex_);
-    timing_valid_ = false;
+    const std::unique_lock<std::mutex> lock =
+      ethercat_interface::lock_without_waiting(timing_mutex_);
+    timing_ = TimingStatistics{};
+    timing_published_ = TimingStatistics{};
     timing_last_valid_ = false;
-    timing_period_min_s_ = 0.0;
-    timing_period_max_s_ = 0.0;
-    timing_period_mean_s_ = 0.0;
-    timing_period_sum_s_ = 0.0;
-    timing_jitter_max_s_ = 0.0;
-    timing_sample_count_ = 0;
-    timing_overrun_count_ = 0;
   }
   // Only touched by the publisher thread, which is not running yet.
   timing_overrun_count_reported_ = 0;
+  sync0_slip_count_reported_ = 0;
+  sync0_phase_error_logged_ = false;
 
   // Derive the node name and hardware ID from the hardware component name,
   // so multiple driver instances in one controller manager publish distinguishable statuses
@@ -1969,6 +2053,7 @@ void EthercatDriver::startDiagnostics()
     diagnostics_updater_->add("EtherCAT Master", this, &EthercatDriver::produceMasterDiagnostics);
     diagnostics_updater_->add(
       "EtherCAT RT Timing", this, &EthercatDriver::produceTimingDiagnostics);
+    diagnostics_updater_->add("EtherCAT SYNC0", this, &EthercatDriver::produceSync0Diagnostics);
 
     const auto module_name = [this](size_t index) -> const std::string * {
         if (index >= ec_module_parameters_.size()) {
@@ -2136,10 +2221,10 @@ void EthercatDriver::produceSlaveDiagnostics(
       s.al_status_code, al_status_code_to_string(s.al_status_code));
   }
   if (s.dc_system_time_diff_valid) {
-    stat.add("dc_system_time_diff_ns", s.dc_system_time_diff__ns);
+    stat.add("dc_system_time_diff_ns", s.dc_system_time_diff_ns);
   }
   if (s.dc_propagation_delay_valid) {
-    stat.add("dc_propagation_delay_ns", s.dc_propagation_delay__ns);
+    stat.add("dc_propagation_delay_ns", s.dc_propagation_delay_ns);
   }
   if (s.has_cia402) {
     stat.add("cia402_state", std::string(s.cia402.device_state_label));
@@ -2147,7 +2232,7 @@ void EthercatDriver::produceSlaveDiagnostics(
   }
 
   const bool dc_drift_high = s.dc_system_time_diff_valid &&
-    std::abs(s.dc_system_time_diff__ns) > dc_time_diff_warn_ns_;
+    std::abs(s.dc_system_time_diff_ns) > dc_time_diff_warn_ns_;
   if (!s.online) {
     stat.summary(DiagnosticStatus::ERROR, "Slave offline");
   } else if (!s.operational) {
@@ -2168,25 +2253,20 @@ void EthercatDriver::produceTimingDiagnostics(
   diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
   using diagnostic_msgs::msg::DiagnosticStatus;
-  // Copy the scalars and release the lock before formatting, since stat.add() and stat.summary()
-  // may allocate and the real-time read() path contends for the same mutex.
-  bool valid = false;
-  double period_min_s = 0.0;
-  double period_max_s = 0.0;
-  double period_mean_s = 0.0;
-  double jitter_max_s = 0.0;
-  uint64_t sample_count = 0;
-  uint64_t overrun_count = 0;
+  // Copy and release the lock before formatting, since stat.add() and stat.summary() may allocate.
+  TimingStatistics timing;
   {
-    const std::lock_guard<std::mutex> lock(timing_mutex_);
-    valid = timing_valid_;
-    period_min_s = timing_period_min_s_;
-    period_max_s = timing_period_max_s_;
-    period_mean_s = timing_period_mean_s_;
-    jitter_max_s = timing_jitter_max_s_;
-    sample_count = timing_sample_count_;
-    overrun_count = timing_overrun_count_;
+    const std::unique_lock<std::mutex> lock =
+      ethercat_interface::lock_without_waiting(timing_mutex_);
+    timing = timing_published_;
   }
+  const bool valid = timing.valid;
+  const double period_min_s = timing.period_min_s;
+  const double period_max_s = timing.period_max_s;
+  const double period_mean_s = timing.period_mean_s;
+  const double jitter_max_s = timing.jitter_max_s;
+  const uint64_t sample_count = timing.sample_count;
+  const uint64_t overrun_count = timing.overrun_count;
   if (!valid) {
     stat.summary(DiagnosticStatus::OK, "No timing samples yet");
     return;
@@ -2210,6 +2290,74 @@ void EthercatDriver::produceTimingDiagnostics(
     stat.summary(DiagnosticStatus::WARN, "Cyclic loop deadline overruns detected");
   } else {
     stat.summary(DiagnosticStatus::OK, "Cyclic loop timing nominal");
+  }
+}
+
+void EthercatDriver::produceSync0Diagnostics(
+  diagnostic_updater::DiagnosticStatusWrapper & stat)
+{
+  using diagnostic_msgs::msg::DiagnosticStatus;
+  if (!master_) {
+    stat.summary(DiagnosticStatus::ERROR, "EtherCAT master not available");
+    return;
+  }
+  const auto timing = master_->takeSync0Timing();
+  if (timing.phase_error_valid && !sync0_phase_error_logged_) {
+    sync0_phase_error_logged_ = true;
+    RCLCPP_INFO(
+      rclcpp::get_logger("EthercatDriver"),
+      "SYNC0 phase read back from a DC slave lies %.1f us from the configured one, "
+      "the DC reference time plus dc_sync0_shift_ns.",
+      static_cast<double>(timing.phase_error_ns) * 1e-3);
+  }
+  if (!timing.valid) {
+    if (!timing.uses_sync0) {
+      stat.summary(DiagnosticStatus::OK, "No slave uses SYNC0");
+      return;
+    }
+    if (timing.phase_wait_ns >= 0) {
+      stat.add("phase_wait_s", static_cast<double>(timing.phase_wait_ns) * 1e-9);
+    }
+    if (static_cast<double>(timing.phase_wait_ns) * 1e-9 > sync0_phase_timeout_s_) {
+      stat.summary(
+        sync0_phase_missing_level_, "SYNC0 phase not read back from a DC slave in OP");
+      return;
+    }
+    // The phase is read from a DC slave in OP, and the margin needs a cyclic frame after that.
+    stat.summary(DiagnosticStatus::OK, "SYNC0 margin not measured yet");
+    return;
+  }
+  stat.add("margin_us", static_cast<double>(timing.margin_ns) * 1e-3);
+  stat.add("phase_error_us", static_cast<double>(timing.phase_error_ns) * 1e-3);
+  if (timing.window_min_distance_ns >= 0) {
+    stat.add("min_distance_us", static_cast<double>(timing.window_min_distance_ns) * 1e-3);
+  }
+  stat.add("slip_count", timing.slip_count);
+
+  // Like the overruns, judged per publication, so a single slip does not latch the status.
+  const uint64_t new_slip_count = timing.slip_count - sync0_slip_count_reported_;
+  sync0_slip_count_reported_ = timing.slip_count;
+  stat.add("slips_since_last_report", new_slip_count);
+  const bool close_to_sync0 = timing.window_min_distance_ns >= 0 &&
+    timing.window_min_distance_ns < sync0_distance_warn_ns_;
+  if (new_slip_count > 0) {
+    stat.summary(
+      DiagnosticStatus::ERROR,
+      "Frames crossed SYNC0; the slaves latched some outputs twice and skipped others");
+  } else if (timing.window_min_distance_ns < 0) {
+    stat.summary(DiagnosticStatus::WARN, "No cyclic frame sent since the previous report");
+  } else if (close_to_sync0) {
+    stat.summary(DiagnosticStatus::WARN, "Frames sent close to SYNC0");
+  } else if (timing.phase_error_valid && timing.phase_error_ns != 0) {
+    // The slaves advance the configured start time by whole cycles, so any difference means the
+    // master started SYNC0 from another DC reference time, typically one an earlier process left
+    // in IgH, which only a deactivation of an active master clears.
+    stat.summary(
+      DiagnosticStatus::WARN,
+      "SYNC0 runs off the configured phase; deactivate and activate to clear a stale DC "
+      "reference time");
+  } else {
+    stat.summary(DiagnosticStatus::OK, "Frames clear of SYNC0");
   }
 }
 

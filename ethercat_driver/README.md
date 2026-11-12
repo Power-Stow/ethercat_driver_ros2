@@ -49,6 +49,9 @@ Set on the `<hardware>` element of the `ros2_control` system.
 `diagnostics_period_s` — diagnostics publish period in seconds (default `1.0`, valid range `[0.001, 3600]`; out-of-range values fall back to the default).
 `dc_time_diff_warn_ns` — per-slave DC system-time-difference magnitude above which a `WARN` is raised (default `10000`, valid range `[0, 2147483647]`; out-of-range values fall back to the default).
 `dt_tolerated_overrun` — fraction of the expected cycle period a cycle may exceed before it counts as an overrun, i.e. the threshold is `(1 + dt_tolerated_overrun) / control_frequency` (default `0.5`; must be finite and `>= 0`, otherwise the default is used).
+`sync0_distance_warn_ns` — distance between a frame's send and the nearest SYNC0 below which the **EtherCAT SYNC0** status raises a `WARN` (default `200000`; must be `>= 0`, otherwise the default is used, and below half a cycle, otherwise a quarter cycle is used).
+`sync0_phase_timeout_s` — time a DC slave may be in OP before the **EtherCAT SYNC0** status reports that the SYNC0 phase was not read back (default `5.0`; must be `> 0`, otherwise the default is used).
+`sync0_phase_missing_level` — level of that report, `warn` or `error` (default `warn`; any other value uses `warn`).
 
 ### Health diagnostics
 
@@ -67,12 +70,50 @@ Published `DiagnosticStatus` entries:
 - **EtherCAT Slave: `<name>`** (one per slave) — AL state (INIT/PREOP/SAFEOP/OP), `online`/`operational`, AL status code (ESC register `0x0134`), DC system-time difference (`0x092C`) and DC propagation delay (`0x0928`) for DC-enabled slaves, and CiA 402 device state for drive slaves.
   If several modules share a configured name, the module index is appended to keep task names unique.
 - **EtherCAT RT Timing** — cyclic-loop period min/mean/max, max jitter (largest deviation from the expected period, early or late), cumulative deadline-overrun count, and overruns since the previous report.
+- **EtherCAT SYNC0** — timing of the frames sent by `write()` relative to the SYNC0 event of the DC slaves: `margin_us` from the last frame's send to the next SYNC0, `min_distance_us` from a send to its nearest SYNC0 since the previous report, and the cumulative `slip_count` and `slips_since_last_report`.
+  A slip is a frame that does not reach the SYNC0 right after the one the previous frame reached, which makes the slaves latch one frame's outputs twice or skip them, whether the frame crossed a SYNC0 or a cycle sent no frame at all.
+  The SYNC0 phase is read once from the first DC slave in OP (next SYNC0 time, ESC register `0x0990`), and until it is and a cyclic frame was sent, the status reports `OK` with only `phase_wait_s`, the time a DC slave has been in OP since.
+  When that exceeds `sync0_phase_timeout_s`, the status reports `sync0_phase_missing_level` instead, and without any slave configured for DC it reports `OK`, since nothing runs SYNC0.
+  `phase_error_us` is the phase read back minus the one IgH configured, the DC reference time plus `dc_sync0_shift_ns`, which is exactly 0 for a slave that follows its configuration.
+  The driver also logs it once per activation, when the phase is read.
 
 Levels: link down, a slave offline/not-operational/not configured by the master, or a drive fault → `ERROR`;
-incomplete working counter, high DC clock drift, or loop overruns since the previous report → `WARN`.
+incomplete working counter, high DC clock drift, loop overruns since the previous report, a frame sent closer to SYNC0 than `sync0_distance_warn_ns`, or no cyclic frame since the previous report → `WARN`.
+A SYNC0 slip since the previous report → `ERROR`.
+A non-zero `phase_error_us` → `WARN`.
+A SYNC0 phase not read back within `sync0_phase_timeout_s` of a DC slave reaching OP → `sync0_phase_missing_level`.
 A failure to set up the diagnostics node or publisher thread is logged as an error,
 diagnostics collection in the cyclic loop is disabled for that activation, and activation continues without diagnostics.
 A failed publication is logged (throttled) and retried on the next period.
+
+#### Reading the EtherCAT SYNC0 status
+
+`cycle` is the SYNC0 cycle time, `1 / control_frequency`.
+
+| Key | Meaning | Healthy value |
+| --- | ------- | ------------- |
+| `margin_us` | Time from the last frame's send to the next SYNC0, in `[0, cycle)`: where in the cycle the frames go out. | Steady, away from both `0` and `cycle` |
+| `min_distance_us` | Smallest distance from a send to its nearest SYNC0, before or after it, `min(margin, cycle - margin)`, over the frames since the previous report. Missing when no frame was sent. | Above `sync0_distance_warn_ns` |
+| `slip_count` | Slips since the activation. | `0` |
+| `slips_since_last_report` | Slips since the previous report. | `0` |
+| `phase_error_us` | SYNC0 phase read back minus the configured one, `(DC reference time + dc_sync0_shift_ns) mod cycle`, in `[-cycle / 2, cycle / 2)`. | Exactly `0` |
+| `phase_wait_s` | Only until the phase is read: time a DC slave has been in OP. | Gone within a few cycles |
+
+`margin_us` is a single sample, and `min_distance_us` is the worst case of the window, measured on both sides of SYNC0,
+because a frame sent just after a SYNC0 is one send-time jitter away from slipping just as one sent just before it.
+While the margins stay below half a cycle, `min_distance_us` is the smallest margin; above it, `cycle` minus the largest.
+
+Both are computed from the phase read back from the slave, so they stay correct when `phase_error_us` is not 0.
+`phase_error_us` checks the configuration instead.
+The master writes the SYNC0 start time as the DC reference time plus whole cycles plus the shift, and the slave advances it by whole cycles,
+so a slave that runs its configuration reads back exactly the configured phase.
+Any other value means SYNC0 does not sit where `dc_sync0_shift_ns` placed it.
+One cause is a DC reference time left over from an earlier process:
+IgH keeps the first application time it receives as the DC reference time and only `ecrt_master_deactivate()` clears it,
+so a process that passed an application time but released the master without activating it,
+for example after a failed configuration or a kill during it, leaves its reference time to the next process that requests the master.
+Deactivating the component and activating it again clears it, since the deactivation releases an active master,
+so the status reports any other value as `WARN` for a supervisor to do that.
 
 The IgH realtime API does not expose Tx-error / lost-frame counters directly, so the master status
 reports the working-counter-derived incomplete-cycle count as a lost-frame proxy.

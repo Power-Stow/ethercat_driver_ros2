@@ -23,7 +23,11 @@
 #include <sys/mman.h>
 #include <string.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cstdint>
+#include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <iostream>
@@ -33,6 +37,7 @@
 #include <cstring>
 #include <utility>
 
+#include "ethercat_interface/ec_diagnostics.hpp"
 #include "ethercat_interface/ec_slave.hpp"
 
 namespace ethercat_interface
@@ -115,11 +120,90 @@ uint64_t EcMaster::applicationTimeNs()
   return EC_MONOTONIC2NANO(t);
 }
 
+void EcMaster::setApplicationTime(uint64_t app_time_ns)
+{
+  if (dc_reference_time_ns_ == 0) {
+    dc_reference_time_ns_ = app_time_ns;
+  }
+  ecrt_master_application_time(master_, app_time_ns);
+}
+
 void EcMaster::syncDistributedClocks()
 {
-  ecrt_master_application_time(master_, applicationTimeNs());
+  app_time_ns_ = applicationTimeNs();
+  setApplicationTime(app_time_ns_);
   ecrt_master_sync_reference_clock(master_);
   ecrt_master_sync_slave_clocks(master_);
+}
+
+void EcMaster::updateSync0Margin(uint64_t send_time_ns)
+{
+  if (sync0_phase_ns_ < 0) {
+    return;
+  }
+  const int64_t margin_ns = sync0_margin_ns(send_time_ns, sync0_phase_ns_, interval_);
+  const uint64_t index = sync0_index(send_time_ns, sync0_phase_ns_, interval_);
+  if (sync0_margin_ns_ >= 0 && index != sync0_index_ + 1) {
+    ++sync0_slip_count_;
+  }
+  sync0_index_ = index;
+  sync0_margin_ns_ = margin_ns;
+  sync0_unpublished_min_distance_ns_ =
+    std::min(sync0_unpublished_min_distance_ns_, sync0_distance_ns(margin_ns, interval_));
+  publishSync0Timing();
+}
+
+void EcMaster::publishSync0Timing()
+{
+  // A non-blocking try-lock, like the diagnostics snapshot, so the cyclic loop never waits for
+  // takeSync0Timing(). A frame measured while the reader holds the lock stays unpublished and goes
+  // out with the next one, together with any slip it counted, so nothing is lost and a slip is
+  // always published with the distance of the frame that slipped.
+  std::unique_lock<std::mutex> lock(sync0_mutex_, std::try_to_lock);
+  if (!lock.owns_lock()) {
+    return;
+  }
+  sync0_published_margin_ns_ = sync0_margin_ns_;
+  sync0_published_slip_count_ = sync0_slip_count_;
+  sync0_published_min_distance_ns_ =
+    std::min(sync0_published_min_distance_ns_, sync0_unpublished_min_distance_ns_);
+  sync0_unpublished_min_distance_ns_ = std::numeric_limits<int64_t>::max();
+  sync0_published_operational_since_ns_ = sync0_operational_since_ns_;
+  sync0_published_phase_error_ns_ = sync0_phase_error_ns_;
+}
+
+void EcMaster::passSync0Margin(int64_t margin_ns)
+{
+  for (SlaveInfo & slave : slave_info_) {
+    if (slave.sync0_margin_consumer != nullptr) {
+      slave.sync0_margin_consumer->setSync0Margin(margin_ns);
+    }
+  }
+}
+
+Sync0Timing EcMaster::takeSync0Timing()
+{
+  std::unique_lock<std::mutex> lock = lock_without_waiting(sync0_mutex_);
+  Sync0Timing timing;
+  timing.margin_ns = sync0_published_margin_ns_;
+  timing.slip_count = sync0_published_slip_count_;
+  const int64_t window_min_ns = sync0_published_min_distance_ns_;
+  sync0_published_min_distance_ns_ = std::numeric_limits<int64_t>::max();
+  const int64_t phase_error_ns = sync0_published_phase_error_ns_;
+  const uint64_t operational_since_ns = sync0_published_operational_since_ns_;
+  lock.unlock();
+
+  timing.valid = timing.margin_ns >= 0;
+  timing.window_min_distance_ns =
+    (window_min_ns == std::numeric_limits<int64_t>::max()) ? -1 : window_min_ns;
+  timing.uses_sync0 = uses_sync0_;
+  timing.phase_error_valid = phase_error_ns != std::numeric_limits<int64_t>::min();
+  if (timing.phase_error_valid) {
+    timing.phase_error_ns = phase_error_ns;
+  } else if (operational_since_ns != 0) {
+    timing.phase_wait_ns = static_cast<int64_t>(applicationTimeNs() - operational_since_ns);
+  }
+  return timing;
 }
 
 void EcMaster::addSlave(uint16_t alias, uint16_t position, EcSlave * slave)
@@ -146,6 +230,7 @@ void EcMaster::addSlave(EcSlave * slave)
   slave_info.slave = slave;
   // Resolved here rather than per cycle, keeping the dynamic_cast out of the cyclic loop.
   slave_info.cia402_provider = dynamic_cast<const Cia402DiagnosticsProvider *>(slave);
+  slave_info.sync0_margin_consumer = dynamic_cast<Sync0MarginConsumer *>(slave);
   slave_info.config = ecrt_master_slave_config(
     master_,
     slave->alias_, slave->position_,
@@ -163,7 +248,8 @@ void EcMaster::addSlave(EcSlave * slave)
         "EtherCAT DC requested, but control frequency/interval is not configured");
     }
 
-    ecrt_master_application_time(master_, applicationTimeNs());
+    setApplicationTime(applicationTimeNs());
+    uses_sync0_ = true;
 
     ecrt_slave_config_dc(
       slave_info.config,
@@ -432,7 +518,7 @@ bool EcMaster::activate()
     }
   }
   // set application time
-  ecrt_master_application_time(master_, applicationTimeNs());
+  setApplicationTime(applicationTimeNs());
 
   // activate master
   bool activate_status = ecrt_master_activate(master_);
@@ -494,6 +580,9 @@ void EcMaster::update(uint32_t domain)
     updateDiagnosticsSnapshot(domain);
   }
 
+  // update() runs the bring-up and wind-down loops, whose frames are not on the cyclic phase.
+  passSync0Margin(-1);
+
   // read and write process data
   for (DomainInfo::Entry & entry : domain_info->entries) {
     entry.slave->set_process_phase("update");
@@ -549,6 +638,9 @@ void EcMaster::readData(uint32_t domain)
     updateDiagnosticsSnapshot(domain);
   }
 
+  // The inputs read now came with the frame sent last, so its margin describes them.
+  passSync0Margin(sync0_margin_ns_);
+
   // read and write process data
   for (DomainInfo::Entry & entry : domain_info->entries) {
     entry.slave->set_process_phase("read");
@@ -584,6 +676,11 @@ void EcMaster::writeData(uint32_t domain)
   // send process data
   ecrt_domain_queue(domain_info->domain);
   ecrt_master_send(master_);
+
+  // Only the cyclic path, not update(): the bring-up loop runs on its own phase, and a margin
+  // carried over from it would count as a slip at the first cyclic frame. Timed after the send,
+  // so a preemption between the application time sample and the send shows in the margin.
+  updateSync0Margin(applicationTimeNs());
 }
 
 void EcMaster::setCtrlCHandler(SIMPLECAT_EXIT_CALLBACK user_callback)
@@ -817,9 +914,11 @@ void EcMaster::createRegisterRequests()
     if (uses_dc) {
       slave.dc_time_diff_reg = ecrt_slave_config_create_reg_request(slave.config, 4);
       slave.dc_delay_reg = ecrt_slave_config_create_reg_request(slave.config, 4);
+      slave.dc_next_sync0_reg = ecrt_slave_config_create_reg_request(slave.config, 8);
     }
     if (slave.al_status_reg == nullptr ||
-      (uses_dc && (slave.dc_time_diff_reg == nullptr || slave.dc_delay_reg == nullptr)))
+      (uses_dc && (slave.dc_time_diff_reg == nullptr || slave.dc_delay_reg == nullptr ||
+      slave.dc_next_sync0_reg == nullptr)))
     {
       printWarning("Diagnostics: failed to create a register request for a slave.");
     }
@@ -877,6 +976,33 @@ void EcMaster::serviceRegisterRequests()
         ecrt_reg_request_read(slave.dc_delay_reg, 0x0928, 4);
       }
     }
+
+    // Next SYNC0 pulse (ESC register 0x0990, 8 bytes) in the slave's system time. All DC slaves
+    // share one SYNC0 grid that stays fixed until the master is deactivated, so the first slave
+    // to answer suffices, read once. The read is only queued in OP, when cyclic operation has
+    // started and the register no longer holds a pending start time.
+    if (slave.dc_next_sync0_reg != nullptr && sync0_phase_ns_ < 0 &&
+      slave.config_state.operational)
+    {
+      if (sync0_operational_since_ns_ == 0) {
+        sync0_operational_since_ns_ = applicationTimeNs();
+      }
+      const ec_request_state_t state = ecrt_reg_request_state(slave.dc_next_sync0_reg);
+      if (state == EC_REQUEST_SUCCESS) {
+        sync0_phase_ns_ = sync0_phase_ns(
+          EC_READ_U64(ecrt_reg_request_data(slave.dc_next_sync0_reg)), app_time_ns_, interval_);
+        sync0_phase_error_ns_ = sync0_phase_error_ns(
+          sync0_phase_ns_, dc_reference_time_ns_, dc_sync0_shift_ns_, interval_);
+      } else if (state != EC_REQUEST_BUSY) {
+        ecrt_reg_request_read(slave.dc_next_sync0_reg, 0x0990, 8);
+      }
+    }
+  }
+
+  // The wait for the phase and the phase error change here, possibly before any cyclic frame
+  // publishes them, so they are published until the phase error is.
+  if (sync0_published_phase_error_ns_ == std::numeric_limits<int64_t>::min()) {
+    publishSync0Timing();
   }
 }
 
@@ -916,9 +1042,9 @@ void EcMaster::updateDiagnosticsSnapshot(uint32_t domain)
     sd.operational = slave.config_state.operational != 0;
     sd.al_status_code = slave.al_status_code;
     sd.al_status_code_valid = slave.al_status_code_valid;
-    sd.dc_system_time_diff__ns = slave.dc_system_time_diff_ns;
+    sd.dc_system_time_diff_ns = slave.dc_system_time_diff_ns;
     sd.dc_system_time_diff_valid = slave.dc_system_time_diff_valid;
-    sd.dc_propagation_delay__ns = slave.dc_propagation_delay_ns;
+    sd.dc_propagation_delay_ns = slave.dc_propagation_delay_ns;
     sd.dc_propagation_delay_valid = slave.dc_propagation_delay_valid;
     sd.has_cia402 = slave.cia402_provider != nullptr;
     if (sd.has_cia402) {
@@ -937,7 +1063,7 @@ void EcMaster::updateDiagnosticsSnapshot(uint32_t domain)
 
 MasterDiagnostics EcMaster::getDiagnostics() const
 {
-  const std::lock_guard<std::mutex> lock(diagnostics_mutex_);
+  const std::unique_lock<std::mutex> lock = lock_without_waiting(diagnostics_mutex_);
   return diagnostics_;
 }
 

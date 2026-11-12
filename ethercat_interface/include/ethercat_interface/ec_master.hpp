@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <stdexcept>
@@ -250,6 +251,12 @@ public:
    *  Intended for a non-real-time publisher; safe to call concurrently with the cyclic loop. */
   MasterDiagnostics getDiagnostics() const;
 
+  /** @brief SYNC0 timing of the frames sent by writeData(), restarting the window minimum.
+   *  For a single non-real-time consumer; safe to call concurrently with the cyclic loop.
+   *  Stays invalid unless diagnostics were enabled before activate(), because the SYNC0 phase is
+   *  read back from a slave through a diagnostics register request. */
+  Sync0Timing takeSync0Timing();
+
   /** @brief Fill in the EcTransferInfo structures
   *
   * @param transfer_nets transfer nets
@@ -297,7 +304,7 @@ protected:
 
 protected:
   /** true if running */
-  volatile bool running_ = false;
+  std::atomic<bool> running_{false};
 
   /** start and current time */
   std::chrono::time_point<std::chrono::system_clock> start_t_, curr_t_;
@@ -336,8 +343,21 @@ protected:
   /** copy the current master/domain/slave state into the diagnostics snapshot */
   void updateDiagnosticsSnapshot(uint32_t domain);
 
+  /** pass @p app_time_ns to IgH, recording the first one as the DC reference time */
+  void setApplicationTime(uint64_t app_time_ns);
+
   /** call IgH DC sync functions from a consistent point in the cycle */
   void syncDistributedClocks();
+
+  /** record the SYNC0 margin of the frame sent at @p send_time_ns, in CLOCK_MONOTONIC */
+  void updateSync0Margin(uint64_t send_time_ns);
+
+  /** copy the cyclic thread's SYNC0 timing to the fields takeSync0Timing() reads, unless
+   *  takeSync0Timing() holds sync0_mutex_; what is not published goes out with the next call */
+  void publishSync0Timing();
+
+  /** hand @p margin_ns to every slave that implements Sync0MarginConsumer */
+  void passSync0Margin(int64_t margin_ns);
 
   /** monotonic application time used for IgH DC synchronization */
   static uint64_t applicationTimeNs();
@@ -375,6 +395,8 @@ protected:
     EcSlave * slave = NULL;
     /** @ref slave as an optional CiA 402 diagnostics provider, resolved once in addSlave() */
     const Cia402DiagnosticsProvider * cia402_provider = NULL;
+    /** @ref slave as an optional SYNC0 margin consumer, resolved once in addSlave() */
+    Sync0MarginConsumer * sync0_margin_consumer = NULL;
     ec_slave_config_t * config = NULL;
     ec_slave_config_state_t config_state = {0, 0, 0};
 
@@ -382,6 +404,7 @@ protected:
     ec_reg_request_t * al_status_reg = NULL;    //< ESC register 0x0134 request.
     ec_reg_request_t * dc_time_diff_reg = NULL;  //< ESC register 0x092C request.
     ec_reg_request_t * dc_delay_reg = NULL;      //< ESC register 0x0928 request.
+    ec_reg_request_t * dc_next_sync0_reg = NULL;  //< ESC register 0x0990 request.
 
     uint16_t al_status_code = 0;
     bool al_status_code_valid = false;
@@ -418,6 +441,53 @@ protected:
   uint32_t interval_;
 
   int32_t dc_sync0_shift_ns_ = 0;
+
+  /** application time passed with the last frame */
+  uint64_t app_time_ns_ = 0;
+
+  /** first application time passed to IgH, which IgH keeps as the DC reference time, the origin
+   *  of the SYNC0 grid; 0 until passed */
+  uint64_t dc_reference_time_ns_ = 0;
+
+  /** whether a slave is configured for distributed clocks; set by addSlave() before activate() */
+  bool uses_sync0_ = false;
+
+  // The SYNC0 fields below, up to sync0_mutex_, are only touched by the cyclic thread.
+
+  /** time a DC slave was first seen in OP while the SYNC0 phase was unread; 0 until then */
+  uint64_t sync0_operational_since_ns_ = 0;
+
+  /** sync0_phase_error_ns() of the read SYNC0 phase; min() until read */
+  int64_t sync0_phase_error_ns_ = std::numeric_limits<int64_t>::min();
+
+  /** SYNC0 phase within the cycle in application time, read back from a DC slave in OP;
+   *  -1 until read */
+  int64_t sync0_phase_ns_ = -1;
+
+  /** SYNC0 margin of the last frame sent by writeData(); -1 until known */
+  int64_t sync0_margin_ns_ = -1;
+
+  /** cumulative frames that did not reach the SYNC0 after the previous frame's, see Sync0Timing */
+  uint64_t sync0_slip_count_ = 0;
+
+  /** smallest distance to SYNC0 of the frames not published yet; max() when there are none */
+  int64_t sync0_unpublished_min_distance_ns_ = std::numeric_limits<int64_t>::max();
+
+  /** SYNC0 index of the last frame sent by writeData(), valid once sync0_margin_ns_ is */
+  uint64_t sync0_index_ = 0;
+
+  /** guards the published SYNC0 timing below between updateSync0Margin() and takeSync0Timing() */
+  std::mutex sync0_mutex_;
+
+  /** SYNC0 timing as the cyclic thread last published it under sync0_mutex_, which it alone
+   *  writes, so it reads them without the lock */
+  int64_t sync0_published_margin_ns_ = -1;
+  uint64_t sync0_published_slip_count_ = 0;
+  uint64_t sync0_published_operational_since_ns_ = 0;
+  int64_t sync0_published_phase_error_ns_ = std::numeric_limits<int64_t>::min();
+
+  /** smallest distance to SYNC0 published since the last takeSync0Timing(); max() when none */
+  int64_t sync0_published_min_distance_ns_ = std::numeric_limits<int64_t>::max();
 
   /** Data transfers (necessary for transfer communication) */
   std::vector<EcTransferInfo> transfers_;

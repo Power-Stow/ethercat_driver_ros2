@@ -93,6 +93,9 @@ if(BUILD_TESTING)
   target_link_libraries(test_ec_master ${PROJECT_NAME})
   # Export the fake IgH functions so calls from the shared library use them without hardware.
   target_link_options(test_ec_master PRIVATE "-Wl,--export-dynamic")
+
+  ament_add_gmock(test_ec_sync0 test/test_ec_sync0.cpp)
+  target_include_directories(test_ec_sync0 PRIVATE include)
 endif()
 
 ## EXPORTS

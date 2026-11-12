@@ -35,7 +35,8 @@
 namespace ethercat_generic_plugins
 {
 
-class EcCiA402Drive : public GenericEcSlave, public ethercat_interface::Cia402DiagnosticsProvider
+class EcCiA402Drive : public GenericEcSlave, public ethercat_interface::Cia402DiagnosticsProvider,
+  public ethercat_interface::Sync0MarginConsumer
 {
 public:
   EcCiA402Drive();
@@ -47,6 +48,8 @@ public:
   virtual void processData(size_t entry_idx, uint8_t * domain_address);
 
   ethercat_interface::Cia402Diagnostics cia402Diagnostics() const override;
+
+  void setSync0Margin(int64_t margin_ns) override {sync0_margin_ns_ = margin_ns;}
 
   virtual bool setupSlave(
     std::unordered_map<std::string, std::string> slave_parameters,
@@ -156,6 +159,8 @@ protected:
   std::string csv_dump_path_;
   std::size_t csv_flush_every_n_ = 1;
   std::uint64_t csv_cycle_counter_ = 0;
+  /** see ethercat_interface::Sync0MarginConsumer::setSync0Margin() */
+  int64_t sync0_margin_ns_ = -1;
   std::ofstream csv_dump_file_;
   std::vector<std::size_t> csv_rpdo_domain_indices_;
   std::vector<std::size_t> csv_tpdo_domain_indices_;

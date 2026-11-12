@@ -193,6 +193,8 @@ protected:
     diagnostic_updater::DiagnosticStatusWrapper & stat, size_t slave_index);
   /** diagnostic_updater task: real-time cyclic-loop timing health. */
   void produceTimingDiagnostics(diagnostic_updater::DiagnosticStatusWrapper & stat);
+  /** diagnostic_updater task: timing of the cyclic frames relative to SYNC0. */
+  void produceSync0Diagnostics(diagnostic_updater::DiagnosticStatusWrapper & stat);
 
 protected:
   std::vector<std::shared_ptr<ethercat_interface::EcSlave>> ec_modules_;
@@ -262,22 +264,42 @@ protected:
   double diagnostics_period_s_ = 1.0;
   int32_t dc_time_diff_warn_ns_ = 10000;  // 10 us
   double dt_tolerated_overrun_ = 0.5;  // fraction of the expected period a cycle may overrun
+  /** distance of a frame's send from SYNC0 below which the SYNC0 status warns */
+  int64_t sync0_distance_warn_ns_ = 0;
+  /** slip count at the previous publication, accessed only by the diagnostics publisher thread */
+  uint64_t sync0_slip_count_reported_ = 0;
+  // The three SYNC0 fields below are set before they are read, from the hardware parameters and
+  // when the diagnostics start, so their initial values are only placeholders.
+  /** time a DC slave may be in OP with the SYNC0 phase unread before the SYNC0 status says so */
+  double sync0_phase_timeout_s_ = 0.0;
+  /** diagnostic_msgs level of the SYNC0 status once the phase stayed unread that long */
+  uint8_t sync0_phase_missing_level_ = 0;
+  /** whether the SYNC0 phase error was logged in this activation, only touched by the publisher */
+  bool sync0_phase_error_logged_ = false;
 
   rclcpp::Node::SharedPtr diagnostics_node_;
   std::unique_ptr<diagnostic_updater::Updater> diagnostics_updater_;
   std::thread diagnostics_thread_;
   std::atomic<bool> diagnostics_thread_running_{false};
 
-  /** guards the real-time cycle-timing statistics below */
+  /** real-time cycle-timing statistics */
+  struct TimingStatistics
+  {
+    bool valid = false;
+    double period_min_s = 0.0;
+    double period_max_s = 0.0;
+    double period_mean_s = 0.0;
+    double period_sum_s = 0.0;
+    double jitter_max_s = 0.0;  //< largest |period - expected period| (early or late)
+    uint64_t sample_count = 0;
+    uint64_t overrun_count = 0;
+  };
+  /** accumulated by read(), only touched by the cyclic thread */
+  TimingStatistics timing_;
+  /** guards timing_published_, which read() only try-locks */
   std::mutex timing_mutex_;
-  bool timing_valid_ = false;
-  double timing_period_min_s_ = 0.0;
-  double timing_period_max_s_ = 0.0;
-  double timing_period_mean_s_ = 0.0;
-  double timing_period_sum_s_ = 0.0;
-  double timing_jitter_max_s_ = 0.0;  //< largest |period - expected period| (early or late)
-  uint64_t timing_sample_count_ = 0;
-  uint64_t timing_overrun_count_ = 0;
+  /** timing_ as read() last published it */
+  TimingStatistics timing_published_;
   /** overrun count at the previous publication,
    *  accessed only by the diagnostics publisher thread */
   uint64_t timing_overrun_count_reported_ = 0;
