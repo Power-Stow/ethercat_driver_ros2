@@ -16,10 +16,8 @@
 #define ETHERCAT_INTERFACE__EC_DIAGNOSTICS_HPP_
 
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
 #include <mutex>
-#include <thread>
 #include <vector>
 
 namespace ethercat_interface
@@ -31,15 +29,7 @@ namespace ethercat_interface
 /// waits. Polling here too means no thread is ever queued on the mutex, so the real-time loop's
 /// unlock never has a waiter to wake, which would cost it a futex syscall. The real-time loop holds
 /// these mutexes for well under a microsecond per cycle, so a retry is rare.
-inline std::unique_lock<std::mutex> lock_without_waiting(std::mutex & mutex)
-{
-  constexpr std::chrono::microseconds retry_period{100};
-  std::unique_lock<std::mutex> lock(mutex, std::defer_lock);
-  while (!lock.try_lock()) {
-    std::this_thread::sleep_for(retry_period);
-  }
-  return lock;
-}
+std::unique_lock<std::mutex> lock_without_waiting(std::mutex & mutex);
 
 /// @brief CiA 402 device-state summary a drive slave can expose for health monitoring.
 ///

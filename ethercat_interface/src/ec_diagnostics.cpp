@@ -14,8 +14,22 @@
 
 #include "ethercat_interface/ec_diagnostics.hpp"
 
+#include <chrono>
+#include <mutex>
+#include <thread>
+
 namespace ethercat_interface
 {
+
+std::unique_lock<std::mutex> lock_without_waiting(std::mutex & mutex)
+{
+  constexpr std::chrono::microseconds retry_period{100};
+  std::unique_lock<std::mutex> lock(mutex, std::defer_lock);
+  while (!lock.try_lock()) {
+    std::this_thread::sleep_for(retry_period);
+  }
+  return lock;
+}
 
 // Out-of-line key function, so the vtable and type_info are emitted once in this library,
 // which keeps the dynamic_cast from EcSlave reliable across dynamically loaded plugins.
