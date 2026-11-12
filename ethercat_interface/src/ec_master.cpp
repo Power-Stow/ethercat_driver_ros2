@@ -430,24 +430,19 @@ int EcMaster::readSlaveSdo(
   return 0;
 }
 
-int EcMaster::checkSlaveIdentity(const EcSlave & slave, ec_slave_info_t * found)
+int EcMaster::readSlaveInfo(const EcSlave & slave, ec_slave_info_t & info)
 {
   if (master_ == nullptr) {
-    printWarning("Check slave identity. Master is not available.");
+    printWarning("Read slave info. Master is not available.");
     return -1;
   }
 
   uint16_t ring_position = 0;
-  int ret = resolveRingPosition(slave.alias_, slave.position_, &ring_position);
+  const int ret = resolveRingPosition(slave.alias_, slave.position_, &ring_position);
   if (ret) {
     return ret;
   }
-  ret = ecrt_master_get_slave(master_, ring_position, found);
-  if (ret) {
-    return ret;
-  }
-  return found->vendor_id == slave.vendor_id_ && found->product_code == slave.product_id_ ?
-         0 : -ENODEV;
+  return ecrt_master_get_slave(master_, ring_position, &info);
 }
 
 void EcMaster::registerPDOInDomain(

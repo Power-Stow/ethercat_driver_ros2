@@ -22,7 +22,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -1139,8 +1138,21 @@ CallbackReturn EthercatDriver::configNetwork()
   size_t mismatched_slave_count = 0;
   for (auto i = 0ul; i < ec_modules_.size(); i++) {
     ec_slave_info_t found{};
-    const int ret = master_->checkSlaveIdentity(*ec_modules_[i], &found);
-    if (ret == -ENODEV) {
+    const int ret = master_->readSlaveInfo(*ec_modules_[i], found);
+    if (ret) {
+      ++mismatched_slave_count;
+      RCLCPP_FATAL(
+        rclcpp::get_logger("EthercatDriver"),
+        "Module '%s' at alias %u position %u: could not read the identity of the slave there: %s.",
+        ec_module_parameters_[i].at("name").c_str(),
+        ec_modules_[i]->alias_,
+        ec_modules_[i]->position_,
+        std::strerror(ret < 0 ? -ret : ret));
+      continue;
+    }
+    if (found.vendor_id != ec_modules_[i]->vendor_id_ ||
+      found.product_code != ec_modules_[i]->product_id_)
+    {
       ++mismatched_slave_count;
       RCLCPP_FATAL(
         rclcpp::get_logger("EthercatDriver"),
@@ -1154,15 +1166,6 @@ CallbackReturn EthercatDriver::configNetwork()
         found.name,
         found.vendor_id,
         found.product_code);
-    } else if (ret) {
-      ++mismatched_slave_count;
-      RCLCPP_FATAL(
-        rclcpp::get_logger("EthercatDriver"),
-        "Module '%s' at alias %u position %u: could not read the identity of the slave there: %s.",
-        ec_module_parameters_[i].at("name").c_str(),
-        ec_modules_[i]->alias_,
-        ec_modules_[i]->position_,
-        std::strerror(ret < 0 ? -ret : ret));
     }
   }
   if (mismatched_slave_count > 0) {
