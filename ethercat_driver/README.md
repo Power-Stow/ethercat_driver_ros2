@@ -80,6 +80,7 @@ Published `DiagnosticStatus` entries:
 Levels: link down, a slave offline/not-operational/not configured by the master, or a drive fault → `ERROR`;
 incomplete working counter, high DC clock drift, loop overruns since the previous report, a frame sent closer to SYNC0 than `sync0_distance_warn_ns`, or no cyclic frame since the previous report → `WARN`.
 A SYNC0 slip since the previous report → `ERROR`.
+A non-zero `phase_error_us` → `WARN`.
 A SYNC0 phase not read back within `sync0_phase_timeout_s` of a DC slave reaching OP → `sync0_phase_missing_level`.
 A failure to set up the diagnostics node or publisher thread is logged as an error,
 diagnostics collection in the cyclic loop is disabled for that activation, and activation continues without diagnostics.
@@ -111,7 +112,8 @@ One cause is a DC reference time left over from an earlier process:
 IgH keeps the first application time it receives as the DC reference time and only `ecrt_master_deactivate()` clears it,
 so a process that passed an application time but released the master without activating it,
 for example after a failed configuration or a kill during it, leaves its reference time to the next process that requests the master.
-Deactivating the component and activating it again clears it, since the deactivation releases an active master.
+Deactivating the component and activating it again clears it, since the deactivation releases an active master,
+so the status reports any other value as `WARN` for a supervisor to do that.
 
 The IgH realtime API does not expose Tx-error / lost-frame counters directly, so the master status
 reports the working-counter-derived incomplete-cycle count as a lost-frame proxy.

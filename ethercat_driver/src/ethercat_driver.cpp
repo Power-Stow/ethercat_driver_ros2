@@ -2348,6 +2348,14 @@ void EthercatDriver::produceSync0Diagnostics(
     stat.summary(DiagnosticStatus::WARN, "No cyclic frame sent since the previous report");
   } else if (close_to_sync0) {
     stat.summary(DiagnosticStatus::WARN, "Frames sent close to SYNC0");
+  } else if (timing.phase_error_valid && timing.phase_error_ns != 0) {
+    // The slaves advance the configured start time by whole cycles, so any difference means the
+    // master started SYNC0 from another DC reference time, typically one an earlier process left
+    // in IgH, which only a deactivation of an active master clears.
+    stat.summary(
+      DiagnosticStatus::WARN,
+      "SYNC0 runs off the configured phase; deactivate and activate to clear a stale DC "
+      "reference time");
   } else {
     stat.summary(DiagnosticStatus::OK, "Frames clear of SYNC0");
   }
