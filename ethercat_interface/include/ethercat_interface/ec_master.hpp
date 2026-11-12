@@ -352,6 +352,10 @@ protected:
   /** record the SYNC0 margin of the frame sent at @p send_time_ns, in CLOCK_MONOTONIC */
   void updateSync0Margin(uint64_t send_time_ns);
 
+  /** copy the cyclic thread's SYNC0 timing to the fields takeSync0Timing() reads, unless
+   *  takeSync0Timing() holds sync0_mutex_; what is not published goes out with the next call */
+  void publishSync0Timing();
+
   /** hand @p margin_ns to every slave that implements Sync0MarginConsumer */
   void passSync0Margin(int64_t margin_ns);
 
@@ -448,17 +452,17 @@ protected:
   /** whether a slave is configured for distributed clocks; set by addSlave() before activate() */
   bool uses_sync0_ = false;
 
+  // The SYNC0 fields below, up to sync0_mutex_, are only touched by the cyclic thread.
+
   /** time a DC slave was first seen in OP while the SYNC0 phase was unread; 0 until then */
-  std::atomic<uint64_t> sync0_operational_since_ns_{0};
+  uint64_t sync0_operational_since_ns_ = 0;
 
   /** sync0_phase_error_ns() of the read SYNC0 phase; min() until read */
-  std::atomic<int64_t> sync0_phase_error_ns_{std::numeric_limits<int64_t>::min()};
+  int64_t sync0_phase_error_ns_ = std::numeric_limits<int64_t>::min();
 
   /** SYNC0 phase within the cycle in application time, read back from a DC slave in OP;
-   *  -1 until read. Only touched by the cyclic thread. */
+   *  -1 until read */
   int64_t sync0_phase_ns_ = -1;
-
-  // The four SYNC0 fields below are only touched by the cyclic thread.
 
   /** SYNC0 margin of the last frame sent by writeData(); -1 until known */
   int64_t sync0_margin_ns_ = -1;
@@ -475,9 +479,12 @@ protected:
   /** guards the published SYNC0 timing below between updateSync0Margin() and takeSync0Timing() */
   std::mutex sync0_mutex_;
 
-  /** SYNC0 timing as the cyclic thread last published it under sync0_mutex_ */
+  /** SYNC0 timing as the cyclic thread last published it under sync0_mutex_, which it alone
+   *  writes, so it reads them without the lock */
   int64_t sync0_published_margin_ns_ = -1;
   uint64_t sync0_published_slip_count_ = 0;
+  uint64_t sync0_published_operational_since_ns_ = 0;
+  int64_t sync0_published_phase_error_ns_ = std::numeric_limits<int64_t>::min();
 
   /** smallest distance to SYNC0 published since the last takeSync0Timing(); max() when none */
   int64_t sync0_published_min_distance_ns_ = std::numeric_limits<int64_t>::max();

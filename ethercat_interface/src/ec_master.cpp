@@ -150,19 +150,26 @@ void EcMaster::updateSync0Margin(uint64_t send_time_ns)
   sync0_margin_ns_ = margin_ns;
   sync0_unpublished_min_distance_ns_ =
     std::min(sync0_unpublished_min_distance_ns_, sync0_distance_ns(margin_ns, interval_));
+  publishSync0Timing();
+}
 
-  // Published with a non-blocking try-lock, like the diagnostics snapshot, so the cyclic loop never
-  // waits for takeSync0Timing(). A frame measured while the reader holds the lock stays unpublished
-  // and goes out with the next one, together with any slip it counted, so nothing is lost and a
-  // slip is always published with the distance of the frame that slipped.
+void EcMaster::publishSync0Timing()
+{
+  // A non-blocking try-lock, like the diagnostics snapshot, so the cyclic loop never waits for
+  // takeSync0Timing(). A frame measured while the reader holds the lock stays unpublished and goes
+  // out with the next one, together with any slip it counted, so nothing is lost and a slip is
+  // always published with the distance of the frame that slipped.
   std::unique_lock<std::mutex> lock(sync0_mutex_, std::try_to_lock);
-  if (lock.owns_lock()) {
-    sync0_published_margin_ns_ = sync0_margin_ns_;
-    sync0_published_slip_count_ = sync0_slip_count_;
-    sync0_published_min_distance_ns_ =
-      std::min(sync0_published_min_distance_ns_, sync0_unpublished_min_distance_ns_);
-    sync0_unpublished_min_distance_ns_ = std::numeric_limits<int64_t>::max();
+  if (!lock.owns_lock()) {
+    return;
   }
+  sync0_published_margin_ns_ = sync0_margin_ns_;
+  sync0_published_slip_count_ = sync0_slip_count_;
+  sync0_published_min_distance_ns_ =
+    std::min(sync0_published_min_distance_ns_, sync0_unpublished_min_distance_ns_);
+  sync0_unpublished_min_distance_ns_ = std::numeric_limits<int64_t>::max();
+  sync0_published_operational_since_ns_ = sync0_operational_since_ns_;
+  sync0_published_phase_error_ns_ = sync0_phase_error_ns_;
 }
 
 void EcMaster::passSync0Margin(int64_t margin_ns)
@@ -182,22 +189,19 @@ Sync0Timing EcMaster::takeSync0Timing()
   timing.slip_count = sync0_published_slip_count_;
   const int64_t window_min_ns = sync0_published_min_distance_ns_;
   sync0_published_min_distance_ns_ = std::numeric_limits<int64_t>::max();
+  const int64_t phase_error_ns = sync0_published_phase_error_ns_;
+  const uint64_t operational_since_ns = sync0_published_operational_since_ns_;
   lock.unlock();
 
   timing.valid = timing.margin_ns >= 0;
   timing.window_min_distance_ns =
     (window_min_ns == std::numeric_limits<int64_t>::max()) ? -1 : window_min_ns;
   timing.uses_sync0 = uses_sync0_;
-  const int64_t phase_error_ns = sync0_phase_error_ns_.load(std::memory_order_relaxed);
   timing.phase_error_valid = phase_error_ns != std::numeric_limits<int64_t>::min();
   if (timing.phase_error_valid) {
     timing.phase_error_ns = phase_error_ns;
-  } else {
-    const uint64_t operational_since_ns =
-      sync0_operational_since_ns_.load(std::memory_order_relaxed);
-    if (operational_since_ns != 0) {
-      timing.phase_wait_ns = static_cast<int64_t>(applicationTimeNs() - operational_since_ns);
-    }
+  } else if (operational_since_ns != 0) {
+    timing.phase_wait_ns = static_cast<int64_t>(applicationTimeNs() - operational_since_ns);
   }
   return timing;
 }
@@ -980,20 +984,25 @@ void EcMaster::serviceRegisterRequests()
     if (slave.dc_next_sync0_reg != nullptr && sync0_phase_ns_ < 0 &&
       slave.config_state.operational)
     {
-      if (sync0_operational_since_ns_.load(std::memory_order_relaxed) == 0) {
-        sync0_operational_since_ns_.store(applicationTimeNs(), std::memory_order_relaxed);
+      if (sync0_operational_since_ns_ == 0) {
+        sync0_operational_since_ns_ = applicationTimeNs();
       }
       const ec_request_state_t state = ecrt_reg_request_state(slave.dc_next_sync0_reg);
       if (state == EC_REQUEST_SUCCESS) {
         sync0_phase_ns_ = sync0_phase_ns(
           EC_READ_U64(ecrt_reg_request_data(slave.dc_next_sync0_reg)), app_time_ns_, interval_);
-        const int64_t phase_error_ns = sync0_phase_error_ns(
+        sync0_phase_error_ns_ = sync0_phase_error_ns(
           sync0_phase_ns_, dc_reference_time_ns_, dc_sync0_shift_ns_, interval_);
-        sync0_phase_error_ns_.store(phase_error_ns, std::memory_order_relaxed);
       } else if (state != EC_REQUEST_BUSY) {
         ecrt_reg_request_read(slave.dc_next_sync0_reg, 0x0990, 8);
       }
     }
+  }
+
+  // The wait for the phase and the phase error change here, possibly before any cyclic frame
+  // publishes them, so they are published until the phase error is.
+  if (sync0_published_phase_error_ns_ == std::numeric_limits<int64_t>::min()) {
+    publishSync0Timing();
   }
 }
 

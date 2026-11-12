@@ -315,6 +315,49 @@ TEST(EcMaster, reads_the_sync0_phase_once_a_dc_slave_is_in_op_and_retries_a_fail
   EXPECT_EQ(request.reads, 2);
 }
 
+TEST(EcMaster, publishes_a_sync0_phase_read_while_the_reader_holds_the_lock_on_the_next_service)
+{
+  auto * fake_master = ecrt_request_master(0);
+  *fake_master = ec_master{};
+  DcSlave slave;
+  TestMaster master(0);
+  master.setCtrlFrequency(FREQUENCY_HZ);
+  master.setDcSync0Shift(SHIFT_NS);
+  master.addSlave(&slave);
+  master.createRegisterRequests();
+  master.addDomain();
+  master.writeData();
+  fake_master->config.state.operational = 1;
+  master.checkSlaveStates();
+  master.serviceRegisterRequests();
+  ec_reg_request & request = next_sync0_request(fake_master);
+  const uint64_t reference_ns = fake_master->application_times.front();
+  const uint64_t app_time_ns = fake_master->application_times.back();
+  const uint64_t cycles = (app_time_ns - reference_ns) / CYCLE_NS + 3;
+  EC_WRITE_U64(request.data, reference_ns + cycles * CYCLE_NS + SHIFT_NS);
+  request.state = EC_REQUEST_SUCCESS;
+
+  // Held by another thread, as takeSync0Timing() does on the diagnostics thread.
+  std::promise<void> locked;
+  std::promise<void> release;
+  std::thread reader([&master, &locked, &release]() {
+      const std::lock_guard<std::mutex> lock(master.sync0Mutex());
+      locked.set_value();
+      release.get_future().wait();
+    });
+  locked.get_future().wait();
+  master.serviceRegisterRequests();
+  release.set_value();
+  reader.join();
+  EXPECT_FALSE(master.takeSync0Timing().phase_error_valid);
+
+  // No cyclic frame was sent since, so the next service publishes the phase read before it.
+  master.serviceRegisterRequests();
+  const auto timing = master.takeSync0Timing();
+  EXPECT_TRUE(timing.phase_error_valid);
+  EXPECT_EQ(timing.phase_error_ns, 0);
+}
+
 TEST(EcMaster, reports_when_no_slave_uses_sync0)
 {
   auto * fake_master = ecrt_request_master(0);
