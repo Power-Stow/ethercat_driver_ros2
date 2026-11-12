@@ -74,7 +74,7 @@ Published `DiagnosticStatus` entries:
   A slip is a frame that does not reach the SYNC0 right after the one the previous frame reached, which makes the slaves latch one frame's outputs twice or skip them, whether the frame crossed a SYNC0 or a cycle sent no frame at all.
   The SYNC0 phase is read once from the first DC slave in OP (next SYNC0 time, ESC register `0x0990`), and until it is and a cyclic frame was sent, the status reports `OK` with only `phase_wait_s`, the time a DC slave has been in OP since.
   When that exceeds `sync0_phase_timeout_s`, the status reports `sync0_phase_missing_level` instead, and without any slave configured for DC it reports `OK`, since nothing runs SYNC0.
-  `phase_error_us` is the phase read back minus the one IgH configured, the DC reference time plus `dc_sync0_shift_ns`, which is close to 0 for a slave that follows its configuration.
+  `phase_error_us` is the phase read back minus the one IgH configured, the DC reference time plus `dc_sync0_shift_ns`, which is exactly 0 for a slave that follows its configuration.
   The driver also logs it once per activation, when the phase is read.
 
 Levels: link down, a slave offline/not-operational/not configured by the master, or a drive fault → `ERROR`;
@@ -84,6 +84,34 @@ A SYNC0 phase not read back within `sync0_phase_timeout_s` of a DC slave reachin
 A failure to set up the diagnostics node or publisher thread is logged as an error,
 diagnostics collection in the cyclic loop is disabled for that activation, and activation continues without diagnostics.
 A failed publication is logged (throttled) and retried on the next period.
+
+#### Reading the EtherCAT SYNC0 status
+
+`cycle` is the SYNC0 cycle time, `1 / control_frequency`.
+
+| Key | Meaning | Healthy value |
+| --- | ------- | ------------- |
+| `margin_us` | Time from the last frame's send to the next SYNC0, in `[0, cycle)`: where in the cycle the frames go out. | Steady, away from both `0` and `cycle` |
+| `min_distance_us` | Smallest distance from a send to its nearest SYNC0, before or after it, `min(margin, cycle - margin)`, over the frames since the previous report. Missing when no frame was sent. | Above `sync0_distance_warn_ns` |
+| `slip_count` | Slips since the activation. | `0` |
+| `slips_since_last_report` | Slips since the previous report. | `0` |
+| `phase_error_us` | SYNC0 phase read back minus the configured one, `(DC reference time + dc_sync0_shift_ns) mod cycle`, in `[-cycle / 2, cycle / 2)`. | Exactly `0` |
+| `phase_wait_s` | Only until the phase is read: time a DC slave has been in OP. | Gone within a few cycles |
+
+`margin_us` is a single sample, and `min_distance_us` is the worst case of the window, measured on both sides of SYNC0,
+because a frame sent just after a SYNC0 is one send-time jitter away from slipping just as one sent just before it.
+While the margins stay below half a cycle, `min_distance_us` is the smallest margin; above it, `cycle` minus the largest.
+
+Both are computed from the phase read back from the slave, so they stay correct when `phase_error_us` is not 0.
+`phase_error_us` checks the configuration instead.
+The master writes the SYNC0 start time as the DC reference time plus whole cycles plus the shift, and the slave advances it by whole cycles,
+so a slave that runs its configuration reads back exactly the configured phase.
+Any other value means SYNC0 does not sit where `dc_sync0_shift_ns` placed it.
+One cause is a DC reference time left over from an earlier process:
+IgH keeps the first application time it receives as the DC reference time and only `ecrt_master_deactivate()` clears it,
+so a process that passed an application time but released the master without activating it,
+for example after a failed configuration or a kill during it, leaves its reference time to the next process that requests the master.
+Deactivating the component and activating it again clears it, since the deactivation releases an active master.
 
 The IgH realtime API does not expose Tx-error / lost-frame counters directly, so the master status
 reports the working-counter-derived incomplete-cycle count as a lost-frame proxy.
