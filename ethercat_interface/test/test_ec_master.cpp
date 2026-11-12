@@ -358,6 +358,24 @@ TEST(EcMaster, publishes_a_sync0_phase_read_while_the_reader_holds_the_lock_on_t
   EXPECT_EQ(timing.phase_error_ns, 0);
 }
 
+TEST(EcMaster, moves_the_dc_reference_time_onto_the_anchor_grid)
+{
+  auto * fake_master = ecrt_request_master(0);
+  *fake_master = ec_master{};
+  DcSlave slave;
+  TestMaster master(0);
+  master.setCtrlFrequency(FREQUENCY_HZ);
+  // 2.5 ms before now, so an application time left where it falls would be off the anchor grid.
+  const uint64_t anchor_ns = TestMaster::applicationTimeNs() - 2500000;
+  master.setDcReferenceAnchor(anchor_ns);
+  master.addSlave(&slave);
+
+  ASSERT_EQ(fake_master->application_times.size(), 1U);
+  const uint64_t reference_ns = fake_master->application_times.front();
+  EXPECT_EQ((reference_ns - anchor_ns) % CYCLE_NS, 0U);
+  EXPECT_LE(reference_ns, TestMaster::applicationTimeNs());
+}
+
 TEST(EcMaster, reports_when_no_slave_uses_sync0)
 {
   auto * fake_master = ecrt_request_master(0);

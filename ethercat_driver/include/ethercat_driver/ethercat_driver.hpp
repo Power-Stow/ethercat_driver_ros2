@@ -234,6 +234,11 @@ protected:
   std::mutex ec_mutex_;
   bool activated_;
 
+  /** Whether activation places the SYNC0 grid on the controller manager's read() calls. */
+  bool align_dc_cycle_to_read_ = false;
+  /** Time of the last read() while inactive, in CLOCK_MONOTONIC; 0 until there is one. */
+  uint64_t inactive_read_time_ns_ = 0;
+
   /** Transfer nets */
   std::vector<ethercat_interface::EcTransferNet> ec_transfer_nets_;
 

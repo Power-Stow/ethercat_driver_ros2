@@ -569,6 +569,17 @@ CallbackReturn EthercatDriver::on_init(
   const std::lock_guard<std::mutex> lock(ec_mutex_);
   activated_ = false;
 
+  // Here rather than at activation, because read() needs it while the component is inactive.
+  align_dc_cycle_to_read_ = false;
+  const auto align_it = info_.hardware_parameters.find("align_dc_cycle_to_read");
+  if (align_it != info_.hardware_parameters.end()) {
+    std::string value = align_it->second;
+    std::transform(
+      value.begin(), value.end(), value.begin(),
+      [](unsigned char c) {return static_cast<char>(std::tolower(c));});
+    align_dc_cycle_to_read_ = (value == "true" || value == "1");
+  }
+
   // Set state vectors
   hw_joint_states_.resize(info_.joints.size());
   for (uint j = 0; j < info_.joints.size(); j++) {
@@ -1278,6 +1289,19 @@ CallbackReturn EthercatDriver::on_activate(
   if (setupMaster() != CallbackReturn::SUCCESS) {
     return CallbackReturn::ERROR;
   }
+  // The controller manager keeps its update loop on a fixed grid, so any read() seen while
+  // inactive, however long ago, places SYNC0 a fixed dc_sync0_shift_ns after every later read().
+  if (align_dc_cycle_to_read_) {
+    if (inactive_read_time_ns_ != 0) {
+      master_->setDcReferenceAnchor(inactive_read_time_ns_);
+    } else {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("EthercatDriver"),
+        "align_dc_cycle_to_read is set, but read() has not been called while the component was "
+        "inactive, so SYNC0 lands at a random point of the controller manager's cycle. Activate "
+        "the component from inactive once the controller manager's update loop runs.");
+    }
+  }
   // configure network
   if (configNetwork() != CallbackReturn::SUCCESS) {
     if (master_) {
@@ -1724,6 +1748,11 @@ hardware_interface::return_type EthercatDriver::read(
     for (auto & transmission : transmissions_) {
       transmission->actuator_to_joint(raw_joint_states_, hw_joint_states_);
     }
+  } else if (lock.owns_lock() && align_dc_cycle_to_read_) {
+    // The controller manager calls read() while the component is inactive too, on its cycle grid.
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    inactive_read_time_ns_ = ethercat_interface::EC_MONOTONIC2NANO(now);
   }
   if (!lock.owns_lock()) {
     RCLCPP_WARN_THROTTLE(
