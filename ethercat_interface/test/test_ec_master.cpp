@@ -60,6 +60,8 @@ struct ec_master
   std::vector<uint64_t> application_times;
   std::chrono::milliseconds send_duration{0};
   uint64_t send_returned_ns = 0;
+  ec_slave_info_t slave_info{};
+  uint16_t requested_slave_position = 0;
 };
 
 namespace
@@ -202,6 +204,31 @@ extern "C" int ecrt_slave_config_sdo(
   EXPECT_EQ(EC_READ_U8(data), 1);
   config->registered_indices.push_back(index);
   return 0;
+}
+
+extern "C" int ecrt_master_get_slave(
+  ec_master_t * master, uint16_t position, ec_slave_info_t * slave_info)
+{
+  master->requested_slave_position = position;
+  *slave_info = master->slave_info;
+  return 0;
+}
+
+TEST(EcMaster, reads_the_slave_at_the_module_address_whatever_its_type)
+{
+  auto * fake_master = ecrt_request_master(0);
+  *fake_master = ec_master{};
+  fake_master->slave_info.vendor_id = 1;
+  fake_master->slave_info.product_code = 2;
+  ethercat_interface::EcMaster master(0);
+  // Without an alias, the module position is the ring position.
+  const uint16_t position = 5;
+  ec_slave_info_t info{};
+
+  EXPECT_EQ(master.readSlaveInfo(ethercat_interface::EcSlave(3, 4, 0, position), info), 0);
+  EXPECT_EQ(fake_master->requested_slave_position, position);
+  EXPECT_EQ(info.vendor_id, 1u);
+  EXPECT_EQ(info.product_code, 2u);
 }
 
 TEST(EcMaster, replays_only_successful_startup_downloads_and_retries_on_reactivation)

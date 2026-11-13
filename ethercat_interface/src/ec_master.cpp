@@ -430,6 +430,21 @@ int EcMaster::readSlaveSdo(
   return 0;
 }
 
+int EcMaster::readSlaveInfo(const EcSlave & slave, ec_slave_info_t & info)
+{
+  if (master_ == nullptr) {
+    printWarning("Read slave info. Master is not available.");
+    return -1;
+  }
+
+  uint16_t ring_position = 0;
+  const int ret = resolveRingPosition(slave.alias_, slave.position_, &ring_position);
+  if (ret) {
+    return ret;
+  }
+  return ecrt_master_get_slave(master_, ring_position, &info);
+}
+
 void EcMaster::registerPDOInDomain(
   std::vector<uint32_t> & channel_indices,
   DomainInfo * domain_info,

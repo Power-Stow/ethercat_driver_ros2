@@ -188,6 +188,15 @@ public:
     double * value,
     uint32_t * abort_code);
 
+  /** Read the information of the slave the bus has at `slave`'s alias and position.
+   *
+   * The slave is resolved to its ring position as for readSlaveSdo(), so `info` describes whichever
+   * slave an SDO transfer to `slave` would reach, whatever its type.
+   * `info` is only written when the return value is 0.
+   * Returns -ENOENT when no slave answers to that alias, or the master query's error.
+   */
+  int readSlaveInfo(const EcSlave & slave, ec_slave_info_t & info);
+
   /** call after adding all slaves, and before update */
   bool activate();
 
